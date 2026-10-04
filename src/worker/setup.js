@@ -102,12 +102,15 @@ export function setup(ctx, options = {}) {
       return { outcome: "stopped-disabled", reads: 0, wakes: 0, results: [] };
     }
     const { etags, acks, tracking } = await loadPollState();
-    const freshEtags = { ...etags };
     const wrappedCollect = async (args) => {
+      // F2: the collector mutates this same `etags` object with list-URL
+      // ETags, so it (not a pre-tick copy) is what gets persisted below.
       const reads = await collect({ ...args, token: tick.token, prevAcks: acks });
       for (const read of reads) {
-        if (read.etag !== undefined) freshEtags[read.key] = read.etag;
-        if (read.input?.tracking !== undefined) {
+        if (read.etag !== undefined) etags[read.key] = read.etag;
+        // F1: untracked PRs carry tracking:null — never persist the null,
+        // or getData throws reading the entry.
+        if (read.input?.tracking !== undefined && read.input.tracking !== null) {
           tracking[read.key] = read.input.tracking;
         }
       }
@@ -129,14 +132,16 @@ export function setup(ctx, options = {}) {
     for (const r of out.results) {
       if (r.ack !== undefined && r.delivered !== false) nextAcks[r.key] = r.ack;
     }
-    await savePollState({ etags: freshEtags, acks: nextAcks, tracking });
+    await savePollState({ etags, acks: nextAcks, tracking });
     return out;
   }
 
   /** Sidebar/table reads: rows + counts for the current filter. */
   async function getData({ filter = defaultFilter(), nowMs = Date.now() } = {}) {
     const { acks, tracking } = await loadPollState();
-    const records = Object.keys(tracking).map((key) => ({
+    // F1 guard: entries without a tracking object (legacy nulls) are
+    // skipped, never dereferenced.
+    const records = Object.keys(tracking).filter((key) => tracking[key]).map((key) => ({
       repo: tracking[key].repository,
       number: tracking[key].number,
       title: tracking[key].title ?? `#${tracking[key].number}`,
