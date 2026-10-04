@@ -199,6 +199,55 @@ test("performAction wakes one known PR and rejects unknown keys", async () => {
   await assert.rejects(api.performAction({ action: "merge" }), /unknown action/);
 });
 
+test("F1: untracked reads persist no null and getData never throws", async () => {
+  const { ctx, wakes, store } = fakeCtx();
+  const validNext = {
+    repository: "org/repo",
+    number: 9,
+    state: "open",
+    merged: false,
+    headSha: HEAD_A,
+    ci: { rollup: "green", sinceMs: null },
+    mergeable: "mergeable",
+    reviewDecision: "review_required",
+    threads: [],
+    comments: [],
+    lastOurResponseAtMs: null,
+    lastMaintainerAtMs: null,
+    fetchedAtMs: T0,
+    readOk: true,
+  };
+  const api = setup(ctx, {
+    ...OPTS,
+    collect: async () => [
+      { key: "org/repo#9", status: 200, input: { prev: null, next: validNext, tracking: null, nowMs: T0 } },
+    ],
+  });
+  const out = await api.tick();
+  assert.equal(out.results[0].outcome, "untracked");
+  assert.equal(wakes.length, 0);
+  assert.ok(!("org/repo#9" in store.state.tracking));
+  const data = await api.getData({ nowMs: T0 });
+  assert.equal(data.totalCount, 0);
+  // Legacy null entries are skipped, not dereferenced.
+  store.state.tracking["org/repo#9"] = null;
+  const data2 = await api.getData({ nowMs: T0 });
+  assert.equal(data2.totalCount, 0);
+});
+
+test("F2: collector-mutated list ETags persist across ticks", async () => {
+  const { ctx, store } = fakeCtx();
+  const api = setup(ctx, {
+    ...OPTS,
+    collect: async ({ etags }) => {
+      etags["https://example.invalid/list"] = "list-etag-2";
+      return [];
+    },
+  });
+  await api.tick();
+  assert.equal(store.state.etags["https://example.invalid/list"], "list-etag-2");
+});
+
 test("entries: sidebar page, detail tab, widget, checklist", () => {
   const records = [
     {
