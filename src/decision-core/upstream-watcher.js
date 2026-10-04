@@ -87,3 +87,23 @@ function stable(value) {
 function signatureOf(normalized) {
   return createHash('sha256').update(stable(normalized)).digest('hex')
 }
+
+/**
+ * Validate and freeze the watcher policy. SLA bounds are positive
+ * millisecond counts; the defaults are respond within 24h, fix red CI
+ * within 24h, one polite ping after 7 days of maintainer silence.
+ * The PR Tracker worker passes a tighter policy (4h response, 4h red CI,
+ * 7d ping) with 12h re-wake and 24h escalation handled worker-side.
+ */
+export function watcherPolicy(policy = {}) {
+  requireValue(policy && typeof policy === 'object' && !Array.isArray(policy), 'watcher policy is required')
+  const {
+    responseSlaMs = 24 * 3_600_000,
+    redCiSlaMs = 24 * 3_600_000,
+    silencePingMs = 7 * 24 * 3_600_000,
+  } = policy
+  requireValue(isMs(responseSlaMs) && responseSlaMs > 0, 'responseSlaMs must be a positive millisecond count')
+  requireValue(isMs(redCiSlaMs) && redCiSlaMs > 0, 'redCiSlaMs must be a positive millisecond count')
+  requireValue(isMs(silencePingMs) && silencePingMs > 0, 'silencePingMs must be a positive millisecond count')
+  return Object.freeze({ responseSlaMs, redCiSlaMs, silencePingMs })
+}
