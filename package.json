@@ -1,6 +1,6 @@
 {
   "name": "paperclip-plugin-pr-tracker",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Paperclip plugin: 2-minute PR watcher with task wakes and compliance checks",
   "scripts": {

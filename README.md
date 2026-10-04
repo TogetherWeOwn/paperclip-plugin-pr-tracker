@@ -13,8 +13,13 @@ so nothing is forgotten.
   `node --test`). No network, no credentials. Fixture identifiers are
   `DEMO-*` placeholders.
 - `src/manifest.js` — plugin manifest: worker capabilities plus the `pollPrs`
-  job at `*/2 * * * *`. UI slots (`sidebar`/`detailTab`/`dashboardWidget`)
-  land with the UI slice.
+  job at `*/2 * * * *`, plus the three UI slots (`sidebar` "Pull Requests",
+  `detailTab` on issues, `dashboardWidget` counts) with `entrypoints.ui`.
+  Slot shapes verified against the live SDK.
+- `src/ui/view-model.js` — pure sidebar view-model: 7-status vocabulary,
+  `StatusBadge` mapping, `needs-us` filter set (saved default), combined
+  status/repo/kind/owner/text filters, widget counts, and `DataTable` row
+  projection. No rendering; the host SDK owns that.
 - `src/worker/poll-prs.js` — `pollPrs` collector. Pure and dependency-free:
   scope dedup, ETag conditional headers, status classifier (401/403 stops the
   source — never substitute credentials; 429/5xx backs off; anything else
@@ -26,6 +31,8 @@ so nothing is forgotten.
 - `test/poll-prs.test.mjs` — offline suite for the collector (11 tests),
   ending in a real-core integration pass: baseline first sight, digest a head
   push, deliver exactly once.
+- `test/view-model.test.mjs` — offline suite for the view-model plus manifest
+  UI-slot assertions (8 tests, `node --test`). No network, no credentials.
 
 ## Policy
 
@@ -42,5 +49,7 @@ npm test
 
 ## Status
 
-Worker MVP first; the sidebar "Pull Requests" page, task tab, and dashboard
-widget follow once the UI slot shape is verified against the plugin SDK.
+UI slots declared and verified against the plugin SDK; the sidebar "Pull
+Requests" page, task tab, and dashboard widget build on
+`src/ui/view-model.js`. The prebuilt UI bundle entry (`./dist/ui.js`) and
+runtime wiring are the next slice.
