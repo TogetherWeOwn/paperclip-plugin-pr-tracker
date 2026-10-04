@@ -1,19 +1,18 @@
-// PR Tracker plugin manifest (staging scaffold).
+// PR Tracker plugin manifest.
 //
 // Validated against `pluginManifestV1Schema` at export time in the public
-// repo. This staging copy mirrors the shape so the export is mechanical:
-// fill in, validate, ship. Rollback for everything under `plugins/pr-tracker/`
-// is delete-the-directory: no core patch, no live wiring.
+// repo. Rollback for everything in this repo is revert-the-commit:
+// no core patch, no live wiring.
 //
 // PHASE GATE (cleared 2026-10-04): UI slot shapes verified against the live
 // plugin SDK (`PLUGIN_UI_SLOT_TYPES`, `pluginUiSlotDeclarationSchema`):
 // `sidebar` / `detailTab` / `dashboardWidget` are all valid slot types;
 // `detailTab` requires `entityTypes` (here `["issue"]`); `routePath` must be
 // a lowercase single-segment slug; `entrypoints.ui` is required whenever
-// `ui.slots` are declared. Only the worker (`pollPrs`) was declared before.
+// `ui.slots` are declared.
 
 export const PLUGIN_ID = "togetherweown.pr-tracker";
-export const PLUGIN_VERSION = "0.3.0";
+export const PLUGIN_VERSION = "0.4.0";
 export const PLUGIN_API_VERSION = "v1";
 
 export const JOB_KEYS = Object.freeze({

@@ -28,6 +28,12 @@ so nothing is forgotten.
 - `src/ui/entries.js` — UI bundle entry models behind the manifest
   `exportName`s: sidebar page, task tab with per-PR compliance checklist,
   and widget counts. The host prebuilds this to `./dist/ui.js`.
+- `src/worker/collect-rest.js` — REST collector factory: ETag list polling
+  with head-SHA skip, per-PR detail mapping (CI rollup, mergeable, review
+  verdict, threads/comments as hashes, response times) to core snapshots.
+  Rate-limited 403s normalize to 429; malformed reads map to `unknown`.
+- `scripts/pack.sh` — mirrors dependency-free ESM into `dist/` with the two
+  manifest entrypoints (`npm run build` wiring rides the export).
 - `src/worker/poll-prs.js` — `pollPrs` collector. Pure and dependency-free:
   scope dedup, ETag conditional headers, status classifier (401/403 stops the
   source — never substitute credentials; 429/5xx backs off; anything else
@@ -36,6 +42,8 @@ so nothing is forgotten.
   decision core with the 4h/4h/7d worker policy. Ack persists only after
   durable delivery; failed delivery withholds the advance so the retry
   converges.
+- `test/collect-rest.test.mjs` — offline suite for the REST collector
+  (8 tests, `node --test`). No network, no credentials.
 - `test/poll-prs.test.mjs` — offline suite for the collector (11 tests),
   ending in a real-core integration pass: baseline first sight, digest a head
   push, deliver exactly once.
@@ -62,5 +70,7 @@ npm test
 UI slots declared and verified against the plugin SDK; the sidebar "Pull
 Requests" page, task tab, and dashboard widget build on
 `src/ui/view-model.js`. Worker setup (`src/worker/setup.js`) and UI bundle
-entries (`src/ui/entries.js`) are wired at version 0.3.0; the prebuilt
-bundles (`./dist/worker.js`, `./dist/ui.js`) are the next slice.
+entries (`src/ui/entries.js`) are wired at version 0.4.0; the prebuilt
+bundles (`./dist/worker.js`, `./dist/ui.js`) build via `npm run build`
+(`scripts/pack.sh`), and REST collection (`src/worker/collect-rest.js`)
+feeds the decision core.

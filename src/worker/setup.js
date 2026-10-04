@@ -1,4 +1,4 @@
-// PR Tracker worker setup (staging scaffold).
+// PR Tracker worker setup.
 //
 // Thin adapter between the plugin host context and the pure decision stack
 // (`poll-prs.js` + `upstream-watcher.js` + UI view-model). All host calls go
@@ -104,7 +104,7 @@ export function setup(ctx, options = {}) {
     const { etags, acks, tracking } = await loadPollState();
     const freshEtags = { ...etags };
     const wrappedCollect = async (args) => {
-      const reads = await collect({ ...args, token: tick.token });
+      const reads = await collect({ ...args, token: tick.token, prevAcks: acks });
       for (const read of reads) {
         if (read.etag !== undefined) freshEtags[read.key] = read.etag;
         if (read.input?.tracking !== undefined) {
