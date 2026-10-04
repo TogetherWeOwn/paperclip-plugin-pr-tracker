@@ -20,6 +20,14 @@ so nothing is forgotten.
   `StatusBadge` mapping, `needs-us` filter set (saved default), combined
   status/repo/kind/owner/text filters, widget counts, and `DataTable` row
   projection. No rendering; the host SDK owns that.
+- `src/worker/setup.js` — thin host adapter: `setup(ctx, options)` registers
+  the `pollPrs` job, resolves the read-only secret ref, loads/saves
+  ack+ETag+tracking state, delivers digests via idempotent task wakes, and
+  exposes `getData`/`performAction` for the UI bridges. REST collection
+  stays injected and fail-loud (`unknown`, never `silent`).
+- `src/ui/entries.js` — UI bundle entry models behind the manifest
+  `exportName`s: sidebar page, task tab with per-PR compliance checklist,
+  and widget counts. The host prebuilds this to `./dist/ui.js`.
 - `src/worker/poll-prs.js` — `pollPrs` collector. Pure and dependency-free:
   scope dedup, ETag conditional headers, status classifier (401/403 stops the
   source — never substitute credentials; 429/5xx backs off; anything else
@@ -33,6 +41,8 @@ so nothing is forgotten.
   push, deliver exactly once.
 - `test/view-model.test.mjs` — offline suite for the view-model plus manifest
   UI-slot assertions (8 tests, `node --test`). No network, no credentials.
+- `test/setup.test.mjs` — offline suite for the worker setup + UI entries
+  (8 tests, `node --test`). No network, no credentials.
 
 ## Policy
 
@@ -51,5 +61,6 @@ npm test
 
 UI slots declared and verified against the plugin SDK; the sidebar "Pull
 Requests" page, task tab, and dashboard widget build on
-`src/ui/view-model.js`. The prebuilt UI bundle entry (`./dist/ui.js`) and
-runtime wiring are the next slice.
+`src/ui/view-model.js`. Worker setup (`src/worker/setup.js`) and UI bundle
+entries (`src/ui/entries.js`) are wired at version 0.3.0; the prebuilt
+bundles (`./dist/worker.js`, `./dist/ui.js`) are the next slice.

@@ -13,7 +13,7 @@
 // `ui.slots` are declared. Only the worker (`pollPrs`) was declared before.
 
 export const PLUGIN_ID = "togetherweown.pr-tracker";
-export const PLUGIN_VERSION = "0.2.0";
+export const PLUGIN_VERSION = "0.3.0";
 export const PLUGIN_API_VERSION = "v1";
 
 export const JOB_KEYS = Object.freeze({
