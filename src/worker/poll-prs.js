@@ -116,6 +116,11 @@ function ledgerOf(entry, nextLedger) {
   return nextLedger ? { ...entry, ledger: nextLedger } : entry;
 }
 
+function hasTrackingIdentity(tracking) {
+  return typeof tracking.issueId === "string" && tracking.issueId.length > 0
+    && typeof tracking.identifier === "string" && tracking.identifier.length > 0;
+}
+
 /**
  * Run one `pollPrs` tick.
  *
@@ -184,17 +189,19 @@ export async function runPollTick({
     if (read.lifecycle?.kind === "issue") {
       if (!ref) throw new Error(`runPollTick: issue read ${read.key} has no subscription ref`);
       const issueLedger = lifecycleLedger(read.lifecycle);
-      const retiredSilent = prevLedger?.state === "retired" && issueLedger.state === "retired";
-      const decided = retiredSilent
-        ? { action: "silent" }
-        : decideIssueLifecycle({
-          prevLedger,
-          nextLedger: issueLedger,
-          tracking: read.tracking ?? null,
-          repository: ref.repository,
-          number: ref.number,
-          cardMarkers: markers,
-        });
+      const tracking = read.tracking ?? null;
+      if (tracking !== null && !hasTrackingIdentity(tracking)) {
+        results.push({ key: read.key, outcome: "unknown", via: "invalid-tracking" });
+        continue;
+      }
+      const decided = decideIssueLifecycle({
+        prevLedger,
+        nextLedger: issueLedger,
+        tracking,
+        repository: ref.repository,
+        number: ref.number,
+        cardMarkers: markers,
+      });
       if (decided.action === "digest") {
         const delivery = await deliver(decided);
         if (delivery && delivery.delivered === true) {
@@ -210,8 +217,13 @@ export async function runPollTick({
     }
 
     const nextLedger = ref && read.lifecycle ? lifecycleLedger(read.lifecycle) : null;
-    const retiredSilent = nextLedger !== null && prevLedger?.state === "retired" && nextLedger.state === "retired";
-    const decided = retiredSilent
+    // Post-terminal noise on a retired ref stays silent; a lifecycle transition still digests once.
+    const postTerminalNoise = nextLedger !== null
+      && prevLedger?.state === "retired"
+      && nextLedger.state === "retired"
+      && nextLedger.lifecycle.terminal !== "open"
+      && prevLedger.lifecycle.terminal === nextLedger.lifecycle.terminal;
+    const decided = postTerminalNoise
       ? { action: "silent" }
       : decide({
         ...read.input,

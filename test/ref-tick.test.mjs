@@ -172,6 +172,7 @@ test("issue closure wakes once, stays silent while unchanged, and wakes again on
   const ledger = host.store.state.ledger[KEY(11199)];
   assert.equal(ledger.state, "active", "closure never retires an equivalence-policy ref");
   assert.equal(ledger.history.length, 4);
+  assert.equal(host.store.state.tracking[KEY(11199)], undefined, "issue tracking is never stored as a PR row");
 });
 
 test("a merged PR retires its ref once; later changes on the retired ref stay silent", async () => {
@@ -305,7 +306,7 @@ test("a failed issue closure is retried, never masked by an unchanged ETag", asy
   assert.equal(host.store.state.ledger[KEY(11199)].lifecycle.terminal, "closed");
 });
 
-test("equivalence evidence retires an issue at first sight; its closure stays silent", async () => {
+test("equivalence evidence retires an issue at first sight; its closure is still one digest", async () => {
   world = { pulls: {}, issues: { 11199: { number: 11199, state: "open", state_reason: null, updated_at: ISO } } };
   const host = makeHost();
   const tick = api(host, [11199], { 11199: { kind: "rebase", sha: "c".repeat(40) } }).tick;
@@ -314,10 +315,70 @@ test("equivalence evidence retires an issue at first sight; its closure stays si
   assert.equal(first.results[0].outcome, "baseline");
   world.issues[11199] = { number: 11199, state: "closed", state_reason: "completed", updated_at: ISO };
   const closed = await tick();
-  assert.equal(closed.results[0].outcome, "silent");
-  assert.equal(host.wakes.length, 0);
+  assert.equal(closed.results[0].outcome, "digest");
+  assert.equal(host.wakes.length, 1);
   const ledger = host.store.state.ledger[KEY(11199)];
   assert.equal(ledger.state, "retired");
   assert.equal(ledger.retiredBy, "equivalence");
   assert.equal(ledger.lifecycle.terminal, "closed");
+});
+
+test("a reopened merged ref wakes once and reactivates its ledger", async () => {
+  world = { pulls: { 10317: { state: "open" } }, issues: {} };
+  const host = makeHost();
+  const tick = api(host, [10317]).tick;
+
+  await tick();
+  world.pulls[10317] = { state: "closed", merged: true, merged_at: ISO };
+  await tick();
+  assert.equal(host.store.state.ledger[KEY(10317)].state, "retired");
+
+  world.pulls[10317] = { state: "open" };
+  const reopened = await tick();
+  assert.equal(reopened.results[0].outcome, "digest");
+  assert.equal(host.wakes.length, 2);
+  assert.equal(host.store.state.ledger[KEY(10317)].state, "active");
+});
+
+test("an equivalence-retired PR digests its closure once, stays silent on later noise, and wakes on reopen", async () => {
+  world = { pulls: { 13113: { state: "open" } }, issues: {} };
+  const host = makeHost();
+  const tick = api(host, [13113], { 13113: { kind: "reviewed_code", sha: "d".repeat(40) } }).tick;
+
+  await tick();
+  world.pulls[13113] = { state: "closed", merged: false };
+  const closed = await tick();
+  assert.equal(closed.results[0].outcome, "digest");
+  assert.equal(host.wakes.length, 1);
+
+  world.pulls[13113] = { state: "closed", merged: false, head: SHA_B };
+  const noise = await tick();
+  assert.equal(noise.results[0].outcome, "silent");
+  assert.equal(host.wakes.length, 1);
+
+  world.pulls[13113] = { state: "open", merged: false, head: SHA_B };
+  const reopened = await tick();
+  assert.equal(reopened.results[0].outcome, "digest");
+  assert.equal(host.wakes.length, 2);
+  assert.equal(host.store.state.ledger[KEY(13113)].state, "retired", "equivalence retirement is not undone by a reopen");
+});
+
+test("an issue tracking row without an identity is an unknown read, never a wake", async () => {
+  world = { pulls: {}, issues: { 11199: { number: 11199, state: "open", state_reason: null, updated_at: ISO } } };
+  const host = makeHost();
+  const brokenCollect = createRestCollector({
+    fetchImpl,
+    resolveTracking: () => ({ issueId: "issue-11199", cardOpen: true }),
+  });
+  const out = await setup(host.ctx, {
+    companyId: "company-1",
+    configPath: "plugins/pr-tracker",
+    secretRef: { type: "secret_ref", secretId: "github-org-app", version: "latest" },
+    scope: { upstream: [], org: [] },
+    subscriptions: subset([11199]),
+    collect: brokenCollect,
+  }).tick();
+  assert.deepEqual(out.results, [{ key: KEY(11199), outcome: "unknown", via: "invalid-tracking" }]);
+  assert.equal(host.wakes.length, 0);
+  assert.equal(host.store.state.ledger[KEY(11199)], undefined);
 });

@@ -248,6 +248,26 @@ test("F2: collector-mutated list ETags persist across ticks", async () => {
   assert.equal(store.state.etags["https://example.invalid/list"], "list-etag-2");
 });
 
+test("an untracked read never overwrites stored tracking", async () => {
+  const { ctx, store } = fakeCtx();
+  let tracked = true;
+  const api = setup(ctx, {
+    ...OPTS,
+    collect: async () => [
+      {
+        key: KEY,
+        status: 200,
+        input: { prev: null, next: snapshot(HEAD_A), tracking: tracked ? TRACKING : null, nowMs: T0 },
+      },
+    ],
+  });
+  await api.tick();
+  assert.equal(store.state.tracking[KEY].issueId, "issue-7");
+  tracked = false;
+  await api.tick();
+  assert.equal(store.state.tracking[KEY].issueId, "issue-7");
+});
+
 test("entries: sidebar page, detail tab, widget, checklist", () => {
   const records = [
     {

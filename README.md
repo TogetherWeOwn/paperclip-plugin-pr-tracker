@@ -39,7 +39,9 @@ so nothing is forgotten.
 - `src/decision-core/ref-ledger.js` — pure typed-ref lifecycle. Only an
   explicit `merged === true` proves a merge. `merged_or_closed` retires on a
   terminal state; `equivalent_fix_verified` retires only on recorded
-  equivalence evidence, never on closure. Issue digests reuse the writer marker.
+  equivalence evidence, never on closure. Post-terminal noise on a retired ref
+  stays silent; each lifecycle transition, including a reopen, digests once.
+  Issue digests reuse the writer marker.
 - `test/ref-subscriptions.test.mjs`, `test/ref-ledger.test.mjs`,
   `test/collect-subscriptions.test.mjs`, `test/ref-tick.test.mjs` — offline
   suites over `test/fixtures/`: all ten refs covered, exclusions held, PR and
