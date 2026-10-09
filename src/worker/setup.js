@@ -25,7 +25,7 @@ import {
   renderWriterProposal,
   writerMarkerForDigest,
 } from "../decision-core/upstream-watcher.js";
-import { runPollTick, shouldRunTick } from "./poll-prs.js";
+import { isTerminalDeliveryError, runPollTick, shouldRunTick } from "./poll-prs.js";
 import { normalizeSubscriptions } from "./ref-subscriptions.js";
 import {
   applyFilters,
@@ -91,15 +91,32 @@ export function setup(ctx, options = {}) {
     await ctx.state.set({ ...stateAddr, state: next });
   }
 
-  /** Deliver one digest: wake the tracking task, exactly once. */
+  /**
+   * Deliver one digest: wake the tracking task. A retry emits the identical
+   * idempotency key (the writer marker), so the host sees a replay, not a
+   * second wake. The host does NOT dedupe on this key — the dedupeKey in
+   * each digest is stable per resulting state, so a lost ack retries the
+   * same key (host may post twice) while a live card marker latches instead
+   * of re-emitting. Delivered means queued:true. A host throw for a
+   * finished/blocked/budget-held card is terminal (never retryable); other
+   * throws stay retryable.
+   */
   async function deliver(decided) {
     const proposal = renderWriterProposal(decided);
     const marker = writerMarkerForDigest(decided);
-    const res = await ctx.issues.requestWakeup(proposal.issueId, companyId, {
-      reason: WAKE_REASON,
-      contextSource: proposal.sourceId,
-      idempotencyKey: marker,
-    });
+    let res;
+    try {
+      res = await ctx.issues.requestWakeup(proposal.issueId, companyId, {
+        reason: WAKE_REASON,
+        contextSource: proposal.sourceId,
+        idempotencyKey: marker,
+      });
+    } catch (error) {
+      if (isTerminalDeliveryError(error)) {
+        return { delivered: false, terminal: true, error: error instanceof Error ? error.message : String(error) };
+      }
+      throw error;
+    }
     return { delivered: res?.queued === true };
   }
 
@@ -141,11 +158,17 @@ export function setup(ctx, options = {}) {
     const nextAcks = { ...acks };
     const nextLedger = { ...ledger };
     for (const r of out.results) {
-      if (r.ack !== undefined && r.delivered !== false) nextAcks[r.key] = r.ack;
-      if (r.ledger !== undefined && r.delivered !== false) nextLedger[r.key] = r.ledger;
+      // Terminal delivery (tracking card finished/blocked) still converges:
+      // the wake can never queue, so ack and ledger advance without a wake
+      // instead of retrying forever. Transient failures keep delivered:false
+      // without terminal and withhold state.
+      const settled = r.delivered !== false || r.terminal === true;
+      if (r.ack !== undefined && settled) nextAcks[r.key] = r.ack;
+      if (r.ledger !== undefined && settled) nextLedger[r.key] = r.ledger;
     }
     // Only discovered PRs are read through list ETags; explicit refs and scope diagnostics never need one.
     const listsSettled = out.results.every((r) => refs[r.key] || r.key.startsWith("scope:")
+      || r.terminal === true
       || (r.delivered !== false && r.outcome !== "unknown"));
     await savePollState({ etags: listsSettled ? etags : etagsBefore, acks: nextAcks, tracking, ledger: nextLedger });
     return out;

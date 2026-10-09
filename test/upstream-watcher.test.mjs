@@ -275,9 +275,11 @@ test('the reopen latch fires once: the latched tick stays silent', () => {
   const settled = decide({ prev: first.nextAck, next: snapshot(), tracking: closed })
   assert.equal(settled.action, 'silent')
 
-  // Lost ack WITHOUT a card marker is a plain retry: identical digest, so
-  // the writer claim still dedupes it to one wake rather than inventing
-  // a new one.
+  // Lost ack WITHOUT a card marker is a plain retry: the identical digest
+  // (same dedupeKey) is re-emitted under the same idempotency key. The host
+  // does not dedupe on that key, so a lost ack can post a duplicate wake —
+  // the marker latch above is the only dedupe, and the worker does not yet
+  // supply cardMarkers (see the PR's Known limits).
   const retry = decide({ prev: ack, next: snapshot(), tracking: closed })
   assert.deepEqual({ ...retry, nextAck: null }, { ...first, nextAck: null })
 

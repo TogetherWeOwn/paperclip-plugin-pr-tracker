@@ -57,11 +57,11 @@ function routes() {
       out.push([`/pulls/${number}`, { status: 401, body: {} }]);
     } else {
       out.push(
-        [`/pulls/${number}/comments`, { body: [] }],
-        [`/pulls/${number}/reviews`, { body: [] }],
+        [`/pulls/${number}/comments`, { body: spec.reviewComments ?? [] }],
+        [`/pulls/${number}/reviews`, { body: spec.reviews ?? [] }],
         [`/pulls/${number}`, { body: prJson(number, spec) }],
-        [`/issues/${number}/comments`, { body: [] }],
-        ["/check-runs", { body: { check_runs: [] } }],
+        [`/issues/${number}/comments`, { body: spec.issueComments ?? [] }],
+        ["/check-runs", { body: { check_runs: spec.checkRuns ?? [] } }],
       );
     }
   }
@@ -100,7 +100,7 @@ function subset(numbers) {
   return { ...registry, refs: registry.refs.filter((ref) => numbers.includes(ref.number)) };
 }
 
-function makeHost({ failures = 0 } = {}) {
+function makeHost({ failures = 0, throwError = null } = {}) {
   const store = {};
   const wakes = [];
   let remaining = failures;
@@ -112,6 +112,7 @@ function makeHost({ failures = 0 } = {}) {
       issues: {
         async requestWakeup(issueId, companyId, opts) {
           wakes.push({ issueId, opts });
+          if (throwError) throw new Error(throwError);
           if (remaining > 0) {
             remaining -= 1;
             return { queued: false, runId: null };
@@ -492,4 +493,65 @@ test("a PR tracking row without cardOpen is an unknown read, never an aborted ti
   assert.deepEqual(second.results, [{ key: KEY(10317), outcome: "unknown", via: "invalid-tracking" }]);
   assert.equal(host.wakes.length, 0);
   assert.equal(host.store.state.ledger[KEY(10317)], undefined);
+});
+
+test("an explicit PR ref never emits owner-compliance SLA breaches", async () => {
+  // A review thread unanswered for 25h would breach the 4h worker policy on
+  // the second tick. Explicit refs are other people's upstream PRs, so the
+  // tick must stay silent: lifecycle transitions only, never SLA wakes.
+  const stale = new Date(Date.now() - 25 * 3_600_000).toISOString();
+  world = {
+    pulls: {
+      10317: {
+        state: "open",
+        reviewComments: [{ id: 1, created_at: stale, updated_at: stale, body: "needs work", user: { login: "maintainer" } }],
+      },
+    },
+    issues: {},
+  };
+  const host = makeHost();
+  const tick = api(host, [10317]).tick;
+
+  const first = await tick();
+  assert.equal(first.results[0].outcome, "baseline");
+  assert.equal(host.wakes.length, 0);
+
+  const second = await tick();
+  assert.equal(second.results[0].outcome, "silent");
+  assert.equal(host.wakes.length, 0);
+  assert.equal(host.store.state.ledger[KEY(10317)].state, "active");
+});
+
+test("a terminal delivery error converges the ledger and ack instead of retrying forever", async () => {
+  world = { pulls: { 10317: { state: "open" } }, issues: {} };
+  const host = makeHost({ throwError: "card is done" });
+  const tick = api(host, [10317]).tick;
+
+  await tick();
+  world.pulls[10317] = { state: "closed", merged: true, merged_at: ISO };
+  const terminal = await tick();
+  assert.equal(terminal.results[0].outcome, "digest");
+  assert.equal(terminal.results[0].delivered, false);
+  assert.equal(terminal.results[0].terminal, true);
+  assert.equal(terminal.wakes, 0);
+  assert.equal(host.store.state.ledger[KEY(10317)].state, "retired");
+  assert.equal(host.store.state.acks[KEY(10317)].snapshot.state, "closed");
+
+  const after = await tick();
+  assert.equal(after.results[0].outcome, "silent");
+  assert.equal(host.wakes.length, 1, "no further wake attempts after convergence");
+});
+
+test("a transient delivery throw stays retryable and withholds state", async () => {
+  world = { pulls: { 10317: { state: "open" } }, issues: {} };
+  const host = makeHost({ throwError: "host unavailable" });
+  const tick = api(host, [10317]).tick;
+
+  await tick();
+  world.pulls[10317] = { state: "closed", merged: true, merged_at: ISO };
+  const failed = await tick();
+  assert.equal(failed.results[0].delivered, false);
+  assert.equal(failed.results[0].terminal, undefined);
+  assert.equal(host.store.state.ledger[KEY(10317)].state, "active");
+  assert.equal(host.store.state.acks[KEY(10317)].snapshot.state, "open");
 });

@@ -7,7 +7,8 @@ import assert from 'node:assert/strict'
 import { decideUpstreamWatch } from '../src/decision-core/upstream-watcher.js'
 import {
   POLICY, RETRY, scopeTargets, etagHeaders, classifyHttpStatus,
-  backoffWithJitter, shouldRunTick, workerPolicy, runPollTick,
+  backoffWithJitter, shouldRunTick, workerPolicy, EXPLICIT_POLICY,
+  isTerminalDeliveryError, runPollTick,
 } from '../src/worker/poll-prs.js'
 
 const T0 = 1_758_000_000_000
@@ -188,4 +189,74 @@ test('integration: real core baselines first sight, digests a head push, stays s
   assert.equal(push.results[0].outcome, 'digest')
   assert.equal(push.wakes, 1)
   assert.equal(deliveries.length, 1)
+})
+
+test('EXPLICIT_POLICY never breaches: explicit refs report lifecycle only, never SLA', () => {
+  assert.deepEqual(EXPLICIT_POLICY, {
+    responseSlaMs: 8.64e15,
+    redCiSlaMs: 8.64e15,
+    silencePingMs: 8.64e15,
+  })
+})
+
+test('isTerminalDeliveryError separates finished/blocked cards from transient throws', () => {
+  for (const message of [
+    'card is done', 'tracking card is closed', 'issue is cancelled',
+    'unresolved blockers', 'budget blocked', 'already finished',
+  ]) {
+    assert.equal(isTerminalDeliveryError(new Error(message)), true, message)
+  }
+  for (const message of ['host unavailable', 'fetch failed', '429 rate limited', '']) {
+    assert.equal(isTerminalDeliveryError(new Error(message)), false, message || '(empty)')
+  }
+})
+
+test('a terminal delivery converges ack and ledger with zero wakes', async () => {
+  const input = {
+    prev: null,
+    next: { repository: 'org/only', number: 1 },
+    tracking: { repository: 'org/only', number: 1, issueId: 'issue-1', identifier: 'DEMO-1', cardOpen: true },
+    nowMs: T0,
+  }
+  const out = await runPollTick({
+    pluginEnabled: true,
+    scope: scopeTargets({}),
+    collect: async () => [{ key: 'k#1', status: 200, input }],
+    decide: () => ({ action: 'digest', dedupeKey: 'fp-9', nextAck: { sig: 'n9' } }),
+    deliver: async () => ({ delivered: false, terminal: true, error: 'card is done' }),
+  })
+  assert.equal(out.wakes, 0)
+  assert.deepEqual(out.results[0], {
+    key: 'k#1', outcome: 'digest', delivered: false, terminal: true,
+    error: 'card is done', ack: { sig: 'n9' },
+  })
+})
+
+test('a throwing delivering host is classified: terminal converges, transient withholds', async () => {
+  const input = {
+    prev: null,
+    next: { repository: 'org/only', number: 1 },
+    tracking: { repository: 'org/only', number: 1, issueId: 'issue-1', identifier: 'DEMO-1', cardOpen: true },
+    nowMs: T0,
+  }
+  const terminal = await runPollTick({
+    pluginEnabled: true,
+    scope: scopeTargets({}),
+    collect: async () => [{ key: 'k#1', status: 200, input }],
+    decide: () => ({ action: 'digest', dedupeKey: 'fp-t', nextAck: { sig: 'nt' } }),
+    deliver: async () => { throw new Error('card is cancelled') },
+  })
+  assert.equal(terminal.results[0].terminal, true)
+  assert.deepEqual(terminal.results[0].ack, { sig: 'nt' })
+
+  const transient = await runPollTick({
+    pluginEnabled: true,
+    scope: scopeTargets({}),
+    collect: async () => [{ key: 'k#1', status: 200, input }],
+    decide: () => ({ action: 'digest', dedupeKey: 'fp-r', nextAck: { sig: 'nr' } }),
+    deliver: async () => { throw new Error('host unavailable') },
+  })
+  assert.equal(transient.results[0].delivered, false)
+  assert.equal(transient.results[0].terminal, undefined)
+  assert.equal(transient.results[0].ack, undefined)
 })

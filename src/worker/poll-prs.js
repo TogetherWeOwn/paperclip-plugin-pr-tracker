@@ -112,15 +112,50 @@ export function workerPolicy() {
   };
 }
 
+/**
+ * Explicit typed refs are other people's upstream PRs: the tick reports
+ * lifecycle transitions only, never owner-compliance SLA breaches. The core
+ * has no SLA-off switch, so explicit refs run under a policy that never
+ * breaches (the core's maximum millisecond count). Discovered org/upstream
+ * PRs keep the 4h/4h/7d worker policy.
+ */
+export const EXPLICIT_POLICY = Object.freeze({
+  responseSlaMs: 8.64e15,
+  redCiSlaMs: 8.64e15,
+  silencePingMs: 8.64e15,
+});
+
+/**
+ * True when a delivery throw means the tracking card can never accept the
+ * wake (finished, blocked, or budget-held card). The host throws for
+ * backlog/done/cancelled cards, unresolved blockers and budget blocks;
+ * retrying those forever would pin the ledger and ack without ever
+ * retiring. Transient throws (host unavailable, network, quota) stay
+ * retryable and return false here.
+ */
+export function isTerminalDeliveryError(error) {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /backlog|done|cancell?ed|unresolved blocker|blocker|budget|card (is )?(closed|finished|done|cancell?ed)|already (closed|finished|done|cancell?ed)/i
+    .test(message);
+}
+
 function ledgerOf(entry, nextLedger) {
   return nextLedger ? { ...entry, ledger: nextLedger } : entry;
 }
 
 async function attemptDelivery(deliver, decided) {
   try {
-    return await deliver(decided);
+    const res = await deliver(decided);
+    if (res && res.terminal === true) {
+      return { delivered: false, terminal: true, ...(res.error ? { error: res.error } : {}) };
+    }
+    return res;
   } catch (error) {
-    return { delivered: false, error: error instanceof Error ? error.message : String(error) };
+    const message = error instanceof Error ? error.message : String(error);
+    if (isTerminalDeliveryError(error)) {
+      return { delivered: false, terminal: true, error: message };
+    }
+    return { delivered: false, error: message };
   }
 }
 
@@ -219,6 +254,14 @@ export async function runPollTick({
         if (delivery && delivery.delivered === true) {
           wakes += 1;
           results.push(ledgerOf({ key: read.key, outcome: "digest", delivered: true }, issueLedger));
+        } else if (delivery && delivery.terminal === true) {
+          // The tracking card is finished or blocked: the wake can never
+          // queue. Advance the ledger so a merged/closed ref still retires
+          // instead of retrying forever; zero wakes.
+          results.push(ledgerOf({
+            key: read.key, outcome: "digest", delivered: false, terminal: true,
+            ...(delivery?.error ? { error: delivery.error } : {}),
+          }, issueLedger));
         } else {
           results.push({ key: read.key, outcome: "digest", delivered: false, ...(delivery?.error ? { error: delivery.error } : {}) });
         }
@@ -245,7 +288,7 @@ export async function runPollTick({
       : decide({
         ...read.input,
         prev: acks[read.key] ?? read.input.prev ?? null,
-        policy,
+        policy: ref ? EXPLICIT_POLICY : policy,
         cardMarkers: markers,
       });
     const persistedLedger = decided.action === "unknown" ? null : nextLedger;
@@ -254,6 +297,16 @@ export async function runPollTick({
       if (delivery && delivery.delivered === true) {
         wakes += 1;
         const entry = { key: read.key, outcome: "digest", delivered: true };
+        if (decided.nextAck !== undefined) entry.ack = decided.nextAck;
+        results.push(ledgerOf(entry, persistedLedger));
+      } else if (delivery && delivery.terminal === true) {
+        // The tracking card is finished or blocked: the wake can never
+        // queue. Advance ack and ledger so the ref still converges instead
+        // of retrying forever; zero wakes.
+        const entry = {
+          key: read.key, outcome: "digest", delivered: false, terminal: true,
+          ...(delivery?.error ? { error: delivery.error } : {}),
+        };
         if (decided.nextAck !== undefined) entry.ack = decided.nextAck;
         results.push(ledgerOf(entry, persistedLedger));
       } else {
