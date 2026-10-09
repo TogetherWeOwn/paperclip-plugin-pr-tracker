@@ -92,14 +92,10 @@ export function setup(ctx, options = {}) {
   }
 
   /**
-   * Deliver one digest: wake the tracking task. A retry emits the identical
-   * idempotency key (the writer marker), so the host sees a replay, not a
-   * second wake. The host does NOT dedupe on this key — the dedupeKey in
-   * each digest is stable per resulting state, so a lost ack retries the
-   * same key (host may post twice) while a live card marker latches instead
-   * of re-emitting. Delivered means queued:true. A host throw for a
-   * finished/blocked/budget-held card is terminal (never retryable); other
-   * throws stay retryable.
+   * Deliver one digest: wake the tracking task with the digest's idempotency
+   * key. The host does not dedupe on that key, so a lost ack can post the same
+   * wake twice. Delivered means queued:true. Only a finished card is terminal;
+   * other throws, including blocker and budget holds, stay retryable.
    */
   async function deliver(decided) {
     const proposal = renderWriterProposal(decided);
@@ -113,7 +109,9 @@ export function setup(ctx, options = {}) {
       });
     } catch (error) {
       if (isTerminalDeliveryError(error)) {
-        return { delivered: false, terminal: true, error: error instanceof Error ? error.message : String(error) };
+        const message = error instanceof Error ? error.message : String(error);
+        ctx.logger.warn("tracking card is finished; digest dropped, ref settled", { issueId: proposal.issueId, message });
+        return { delivered: false, terminal: true, error: message };
       }
       throw error;
     }
@@ -158,10 +156,8 @@ export function setup(ctx, options = {}) {
     const nextAcks = { ...acks };
     const nextLedger = { ...ledger };
     for (const r of out.results) {
-      // Terminal delivery (tracking card finished/blocked) still converges:
-      // the wake can never queue, so ack and ledger advance without a wake
-      // instead of retrying forever. Transient failures keep delivered:false
-      // without terminal and withhold state.
+      // A finished tracking card converges: its wake can never queue, so ack and ledger advance with zero wakes.
+      // Other failures keep delivered:false without terminal and withhold state.
       const settled = r.delivered !== false || r.terminal === true;
       if (r.ack !== undefined && settled) nextAcks[r.key] = r.ack;
       if (r.ledger !== undefined && settled) nextLedger[r.key] = r.ledger;

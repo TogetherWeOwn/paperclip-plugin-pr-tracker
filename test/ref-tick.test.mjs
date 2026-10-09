@@ -103,16 +103,21 @@ function subset(numbers) {
 function makeHost({ failures = 0, throwError = null } = {}) {
   const store = {};
   const wakes = [];
+  const logs = [];
+  const refusal = { message: throwError };
   let remaining = failures;
   return {
     wakes,
     store,
+    logs,
+    refusal,
     ctx: {
       jobs: { register() {} },
+      logger: { info() {}, warn(message, meta) { logs.push({ message, meta }); }, error() {}, debug() {} },
       issues: {
         async requestWakeup(issueId, companyId, opts) {
           wakes.push({ issueId, opts });
-          if (throwError) throw new Error(throwError);
+          if (refusal.message) throw new Error(refusal.message);
           if (remaining > 0) {
             remaining -= 1;
             return { queued: false, runId: null };
@@ -522,9 +527,9 @@ test("an explicit PR ref never emits owner-compliance SLA breaches", async () =>
   assert.equal(host.store.state.ledger[KEY(10317)].state, "active");
 });
 
-test("a terminal delivery error converges the ledger and ack instead of retrying forever", async () => {
+test("a finished tracking card converges the ledger and ack with one logged drop", async () => {
   world = { pulls: { 10317: { state: "open" } }, issues: {} };
-  const host = makeHost({ throwError: "card is done" });
+  const host = makeHost({ throwError: "Issue is not wakeable in status: done" });
   const tick = api(host, [10317]).tick;
 
   await tick();
@@ -536,10 +541,39 @@ test("a terminal delivery error converges the ledger and ack instead of retrying
   assert.equal(terminal.wakes, 0);
   assert.equal(host.store.state.ledger[KEY(10317)].state, "retired");
   assert.equal(host.store.state.acks[KEY(10317)].snapshot.state, "closed");
+  assert.equal(host.logs.length, 1);
+  assert.match(host.logs[0].message, /digest dropped/);
 
   const after = await tick();
   assert.equal(after.results[0].outcome, "silent");
   assert.equal(host.wakes.length, 1, "no further wake attempts after convergence");
+});
+
+test("a card held by a blocker or budget at merge time gets the digest once the hold clears", async () => {
+  for (const hold of [
+    "Issue is blocked by unresolved blockers",
+    "Company is paused because its budget hard-stop was reached.",
+  ]) {
+    world = { pulls: { 10317: { state: "open" } }, issues: {} };
+    const host = makeHost({ throwError: hold });
+    const tick = api(host, [10317]).tick;
+
+    await tick();
+    world.pulls[10317] = { state: "closed", merged: true, merged_at: ISO };
+    const held = await tick();
+    assert.equal(held.results[0].delivered, false, hold);
+    assert.equal(held.results[0].terminal, undefined, hold);
+    assert.equal(host.store.state.ledger[KEY(10317)].state, "active", hold);
+    assert.equal(host.store.state.acks[KEY(10317)].snapshot.state, "open", hold);
+
+    host.refusal.message = null;
+    const released = await tick();
+    assert.equal(released.results[0].delivered, true, hold);
+    assert.equal(host.wakes.length, 2, hold);
+    assert.equal(host.wakes[0].opts.idempotencyKey, host.wakes[1].opts.idempotencyKey, hold);
+    assert.equal(host.store.state.ledger[KEY(10317)].state, "retired", hold);
+    assert.equal(host.logs.length, 0, hold);
+  }
 });
 
 test("a transient delivery throw stays retryable and withholds state", async () => {

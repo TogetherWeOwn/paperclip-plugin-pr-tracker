@@ -22,7 +22,7 @@ so nothing is forgotten.
   projection. No rendering; the host SDK owns that.
 - `src/worker/setup.js` — thin host adapter: `setup(ctx, options)` registers
   the `pollPrs` job, resolves the read-only secret ref, loads/saves
-  ack+ETag+tracking state, delivers digests via idempotent task wakes, and
+  ack+ETag+tracking state, delivers digests via task wakes, and
   exposes `getData`/`performAction` for the UI bridges. REST collection
   stays injected and fail-loud (`unknown`, never `silent`).
 - `src/ui/entries.js` — UI bundle entry models behind the manifest

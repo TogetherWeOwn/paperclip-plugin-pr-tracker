@@ -125,18 +125,10 @@ export const EXPLICIT_POLICY = Object.freeze({
   silencePingMs: 8.64e15,
 });
 
-/**
- * True when a delivery throw means the tracking card can never accept the
- * wake (finished, blocked, or budget-held card). The host throws for
- * backlog/done/cancelled cards, unresolved blockers and budget blocks;
- * retrying those forever would pin the ledger and ack without ever
- * retiring. Transient throws (host unavailable, network, quota) stay
- * retryable and return false here.
- */
+// Only the host's finished-card refusal is permanent; blocker and budget holds clear on their own.
 export function isTerminalDeliveryError(error) {
   const message = error instanceof Error ? error.message : String(error ?? "");
-  return /backlog|done|cancell?ed|unresolved blocker|blocker|budget|card (is )?(closed|finished|done|cancell?ed)|already (closed|finished|done|cancell?ed)/i
-    .test(message);
+  return /Issue is not wakeable in status: (backlog|done|cancelled)\b/.test(message);
 }
 
 function ledgerOf(entry, nextLedger) {
@@ -255,9 +247,7 @@ export async function runPollTick({
           wakes += 1;
           results.push(ledgerOf({ key: read.key, outcome: "digest", delivered: true }, issueLedger));
         } else if (delivery && delivery.terminal === true) {
-          // The tracking card is finished or blocked: the wake can never
-          // queue. Advance the ledger so a merged/closed ref still retires
-          // instead of retrying forever; zero wakes.
+          // The tracking card is finished: the wake can never queue. Advance the ledger so the ref retires; zero wakes.
           results.push(ledgerOf({
             key: read.key, outcome: "digest", delivered: false, terminal: true,
             ...(delivery?.error ? { error: delivery.error } : {}),
@@ -300,9 +290,7 @@ export async function runPollTick({
         if (decided.nextAck !== undefined) entry.ack = decided.nextAck;
         results.push(ledgerOf(entry, persistedLedger));
       } else if (delivery && delivery.terminal === true) {
-        // The tracking card is finished or blocked: the wake can never
-        // queue. Advance ack and ledger so the ref still converges instead
-        // of retrying forever; zero wakes.
+        // The tracking card is finished: the wake can never queue. Advance ack and ledger; zero wakes.
         const entry = {
           key: read.key, outcome: "digest", delivered: false, terminal: true,
           ...(delivery?.error ? { error: delivery.error } : {}),

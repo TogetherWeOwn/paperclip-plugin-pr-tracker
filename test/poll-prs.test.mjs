@@ -199,14 +199,17 @@ test('EXPLICIT_POLICY never breaches: explicit refs report lifecycle only, never
   })
 })
 
-test('isTerminalDeliveryError separates finished/blocked cards from transient throws', () => {
-  for (const message of [
-    'card is done', 'tracking card is closed', 'issue is cancelled',
-    'unresolved blockers', 'budget blocked', 'already finished',
-  ]) {
-    assert.equal(isTerminalDeliveryError(new Error(message)), true, message)
+test('isTerminalDeliveryError converges only on the host finished-card refusal', () => {
+  for (const status of ['backlog', 'done', 'cancelled']) {
+    assert.equal(isTerminalDeliveryError(new Error(`Issue is not wakeable in status: ${status}`)), true, status)
   }
-  for (const message of ['host unavailable', 'fetch failed', '429 rate limited', '']) {
+  for (const message of [
+    'Issue is blocked by unresolved blockers',
+    'Company is paused because its budget hard-stop was reached.',
+    'Issue has no assigned agent to wake',
+    'Worker RPC host is shutting down',
+    'host unavailable', 'fetch failed', '429 rate limited', '',
+  ]) {
     assert.equal(isTerminalDeliveryError(new Error(message)), false, message || '(empty)')
   }
 })
@@ -223,40 +226,42 @@ test('a terminal delivery converges ack and ledger with zero wakes', async () =>
     scope: scopeTargets({}),
     collect: async () => [{ key: 'k#1', status: 200, input }],
     decide: () => ({ action: 'digest', dedupeKey: 'fp-9', nextAck: { sig: 'n9' } }),
-    deliver: async () => ({ delivered: false, terminal: true, error: 'card is done' }),
+    deliver: async () => ({ delivered: false, terminal: true, error: 'Issue is not wakeable in status: done' }),
   })
   assert.equal(out.wakes, 0)
   assert.deepEqual(out.results[0], {
     key: 'k#1', outcome: 'digest', delivered: false, terminal: true,
-    error: 'card is done', ack: { sig: 'n9' },
+    error: 'Issue is not wakeable in status: done', ack: { sig: 'n9' },
   })
 })
 
-test('a throwing delivering host is classified: terminal converges, transient withholds', async () => {
+test('a throwing delivering host: finished converges; holds and transient failures withhold', async () => {
   const input = {
     prev: null,
     next: { repository: 'org/only', number: 1 },
     tracking: { repository: 'org/only', number: 1, issueId: 'issue-1', identifier: 'DEMO-1', cardOpen: true },
     nowMs: T0,
   }
-  const terminal = await runPollTick({
+  const tickWith = (message) => runPollTick({
     pluginEnabled: true,
     scope: scopeTargets({}),
     collect: async () => [{ key: 'k#1', status: 200, input }],
     decide: () => ({ action: 'digest', dedupeKey: 'fp-t', nextAck: { sig: 'nt' } }),
-    deliver: async () => { throw new Error('card is cancelled') },
+    deliver: async () => { throw new Error(message) },
   })
-  assert.equal(terminal.results[0].terminal, true)
-  assert.deepEqual(terminal.results[0].ack, { sig: 'nt' })
 
-  const transient = await runPollTick({
-    pluginEnabled: true,
-    scope: scopeTargets({}),
-    collect: async () => [{ key: 'k#1', status: 200, input }],
-    decide: () => ({ action: 'digest', dedupeKey: 'fp-r', nextAck: { sig: 'nr' } }),
-    deliver: async () => { throw new Error('host unavailable') },
-  })
-  assert.equal(transient.results[0].delivered, false)
-  assert.equal(transient.results[0].terminal, undefined)
-  assert.equal(transient.results[0].ack, undefined)
+  const finished = await tickWith('Issue is not wakeable in status: cancelled')
+  assert.equal(finished.results[0].terminal, true)
+  assert.deepEqual(finished.results[0].ack, { sig: 'nt' })
+
+  for (const message of [
+    'Issue is blocked by unresolved blockers',
+    'Company is paused because its budget hard-stop was reached.',
+    'host unavailable',
+  ]) {
+    const held = await tickWith(message)
+    assert.equal(held.results[0].delivered, false, message)
+    assert.equal(held.results[0].terminal, undefined, message)
+    assert.equal(held.results[0].ack, undefined, message)
+  }
 })
