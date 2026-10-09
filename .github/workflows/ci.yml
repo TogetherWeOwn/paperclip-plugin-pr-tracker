@@ -1,0 +1,110 @@
+# Org CI standard (CI-STANDARD.md), started from workflow-templates/starter-ci.yml.
+# Never add workflow-level `on: pull_request: paths:`: a skipped workflow never reports ci-ok.
+
+name: CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  merge_group: {}
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 3 * * *" # nightly full run
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    name: changes
+    uses: TogetherWeOwn/.github/.github/workflows/changes.yml@e4659ccc37ae6e5b3622f7ced9ace4d65fdf5676
+    with:
+      areas-json: '{"code":["src/**","test/**","scripts/**"],"docs":["**.md"]}'
+      full-run-globs-json: '["package.json","**/package.json","package-lock.json","**/package-lock.json","npm-shrinkwrap.json","**/npm-shrinkwrap.json","pnpm-lock.yaml","**/pnpm-lock.yaml","yarn.lock","**/yarn.lock","Gemfile","**/Gemfile","Gemfile.lock","**/Gemfile.lock","Cargo.toml","**/Cargo.toml","Cargo.lock","**/Cargo.lock","go.mod","**/go.mod","go.sum","**/go.sum","pyproject.toml","**/pyproject.toml","poetry.lock","**/poetry.lock","uv.lock","**/uv.lock","requirements*.txt","**/requirements*.txt","requirements*.in","**/requirements*.in","setup.py","**/setup.py","setup.cfg","**/setup.cfg","Pipfile","**/Pipfile","Pipfile.lock","**/Pipfile.lock","composer.json","**/composer.json","composer.lock","**/composer.lock","pnpm-workspace.yaml","**/pnpm-workspace.yaml","go.work","**/go.work","go.work.sum","**/go.work.sum","tsconfig*.json","**/tsconfig*.json","jsconfig*.json","**/jsconfig*.json",".cargo/**","**/.cargo/**","rust-toolchain*","**/rust-toolchain*",".npmrc","**/.npmrc",".yarnrc*","**/.yarnrc*","Makefile*","**/Makefile*","CMakeLists.txt","**/CMakeLists.txt",".github/**","shared/**","common/**","build/**","Dockerfile*","**/Dockerfile*","docker-compose*.yml","**/docker-compose*.yml"]'
+      docs-areas-json: '["docs"]'
+
+  full_run:
+    name: full run context
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      force: ${{ steps.ctx.outputs.force }}
+    steps:
+      - id: ctx
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "force=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "force=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  test:
+    name: test
+    needs: [changes, full_run]
+    if: needs.full_run.outputs.force == 'true' || needs.changes.outputs.full_run == 'true' || (fromJSON(needs.changes.outputs.areas).code && (github.event_name != 'pull_request' || github.event.pull_request.draft == false))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+      - run: npm test
+      - run: npm run build
+
+  secret-scan:
+    name: secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # The image runs directly, not via trufflesecurity/trufflehog: that action passes an empty
+      # --since-commit and --branch on schedule runs, so the next flag is parsed as a value.
+      # --only-verified keeps unverified fixture strings from failing the gate.
+      - name: Scan commits for verified secrets
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          zero=0000000000000000000000000000000000000000
+          args=(git file:///tmp/ --only-verified --fail --no-update --github-actions)
+          case "$EVENT_NAME" in
+            pull_request) args+=(--since-commit "$PR_BASE_SHA") ;;
+            push) [ "$PUSH_BEFORE_SHA" = "$zero" ] || args+=(--since-commit "$PUSH_BEFORE_SHA") ;;
+          esac
+          docker run --rm -v "$PWD:/tmp" -w /tmp ghcr.io/trufflesecurity/trufflehog@sha256:47a84bc18a0d04a165498bbbd3bacfd84176661cbc91f8e0f85467f6a771e99a "${args[@]}"
+
+  ci-ok:
+    name: ci-ok
+    needs: [changes, full_run, test, secret-scan]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every needed job to pass or skip
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          python3 -I - <<'EOF'
+          import json, os, sys
+          needs = json.loads(os.environ["NEEDS_JSON"])
+          bad = {k: v.get("result") for k, v in needs.items()
+                 if v.get("result") not in ("success", "skipped")}
+          if bad:
+              print(f"failing jobs: {bad}")
+              sys.exit(1)
+          print("ci-ok: every needed job succeeded or was skipped")
+          EOF
