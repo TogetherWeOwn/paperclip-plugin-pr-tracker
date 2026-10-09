@@ -10,7 +10,7 @@ import { createRestCollector } from "../src/worker/collect-rest.js";
 import { normalizeSubscriptions } from "../src/worker/ref-subscriptions.js";
 
 const registry = JSON.parse(
-  readFileSync(fileURLToPath(new URL("./fixtures/tog2-registry.json", import.meta.url)), "utf8"),
+  readFileSync(fileURLToPath(new URL("./fixtures/typed-refs-registry.json", import.meta.url)), "utf8"),
 );
 const REPO = "paperclipai/paperclip";
 const SHA = "d".repeat(40);

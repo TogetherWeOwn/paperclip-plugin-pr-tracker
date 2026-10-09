@@ -340,6 +340,20 @@ test('an upstream merge produces one close digest, then retires silent', () => {
   assert.equal(retired.action, 'silent')
 })
 
+test('a PR closed again after a reopen digests the second closure under a new key', () => {
+  const ack = baselineAck()
+  const closed = decide({ prev: ack, next: snapshot({ state: 'closed' }) })
+  assert.deepEqual(closed.changes.map((change) => change.kind), ['closed'])
+
+  const reopened = decide({ prev: closed.nextAck, next: snapshot({ state: 'open' }) })
+  assert.deepEqual(reopened.changes.map((change) => change.kind), ['reopened'])
+
+  const reclosed = decide({ prev: reopened.nextAck, next: snapshot({ state: 'closed' }) })
+  assert.equal(reclosed.action, 'digest')
+  assert.deepEqual(reclosed.changes.map((change) => change.kind), ['closed'])
+  assert.notEqual(reclosed.dedupeKey, closed.dedupeKey)
+})
+
 // --- writer proposal and watchdog section ---------------------------------------
 
 test('the writer proposal uses the existing operator_decision verb', () => {

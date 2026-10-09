@@ -1,8 +1,6 @@
 {
   "schemaVersion": 1,
   "repository": "paperclipai/paperclip",
-  "ledgerPath": "ops/paperclip/FORK-TRACKING.md",
-  "releaseLine": "tog.2",
   "refs": [
     { "number": 13113, "kind": "pull_request", "role": "partial_patch_source", "retireLedgerWhen": "equivalent_fix_verified" },
     { "number": 10317, "kind": "pull_request", "role": "partial_patch_source", "retireLedgerWhen": "merged_or_closed" },

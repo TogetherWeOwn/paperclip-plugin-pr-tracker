@@ -11,7 +11,7 @@ import { setup } from "../src/worker/setup.js";
 import { createRestCollector } from "../src/worker/collect-rest.js";
 
 const registry = JSON.parse(
-  readFileSync(fileURLToPath(new URL("./fixtures/tog2-registry.json", import.meta.url)), "utf8"),
+  readFileSync(fileURLToPath(new URL("./fixtures/typed-refs-registry.json", import.meta.url)), "utf8"),
 );
 const REPO = "paperclipai/paperclip";
 const SHA_A = "a".repeat(40);
@@ -338,6 +338,29 @@ test("a reopened merged ref wakes once and reactivates its ledger", async () => 
   assert.equal(reopened.results[0].outcome, "digest");
   assert.equal(host.wakes.length, 2);
   assert.equal(host.store.state.ledger[KEY(10317)].state, "active");
+});
+
+test("a PR closed again after a reopen digests the second closure and retires again", async () => {
+  world = { pulls: { 10317: { state: "open" } }, issues: {} };
+  const host = makeHost();
+  const tick = api(host, [10317]).tick;
+
+  await tick();
+  world.pulls[10317] = { state: "closed", merged: false };
+  const closed = await tick();
+  assert.equal(closed.results[0].outcome, "digest");
+
+  world.pulls[10317] = { state: "open", merged: false };
+  const reopened = await tick();
+  assert.equal(reopened.results[0].outcome, "digest");
+  assert.equal(host.wakes.length, 2);
+
+  world.pulls[10317] = { state: "closed", merged: false };
+  const reclosed = await tick();
+  assert.equal(reclosed.results[0].outcome, "digest");
+  assert.equal(host.wakes.length, 3);
+  assert.notEqual(host.wakes[2].opts.idempotencyKey, host.wakes[0].opts.idempotencyKey);
+  assert.equal(host.store.state.ledger[KEY(10317)].state, "retired");
 });
 
 test("an equivalence-retired PR digests its closure once, stays silent on later noise, and wakes on reopen", async () => {

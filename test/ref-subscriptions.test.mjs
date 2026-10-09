@@ -13,7 +13,7 @@ import {
 } from "../src/worker/ref-subscriptions.js";
 
 const registry = JSON.parse(
-  readFileSync(fileURLToPath(new URL("./fixtures/tog2-registry.json", import.meta.url)), "utf8"),
+  readFileSync(fileURLToPath(new URL("./fixtures/typed-refs-registry.json", import.meta.url)), "utf8"),
 );
 
 test("all ten validated typed refs normalize with their kind and retire policy", () => {

@@ -223,6 +223,8 @@ function validateAck(ack) {
   // the writer marker, and the latch below refuses the duplicate.
   requireValue(typeof ack.reopenReported === 'boolean', 'ack reopenReported is required')
   requireValue(isMs(ack.firstSeenMs), 'ack firstSeenMs is invalid')
+  requireValue(ack.stateFlips === undefined || (Number.isSafeInteger(ack.stateFlips) && ack.stateFlips >= 0),
+    'ack stateFlips is invalid')
 }
 
 /**
@@ -270,7 +272,7 @@ function diffSnapshots(prev, next) {
     changes.push({ kind: next.state === 'closed' ? 'closed' : 'reopened', detail: `state:${prev.state}->${next.state}` })
     // A close is one change, not a cascade: head/CI/review deltas on a
     // closed PR are retirement bookkeeping, already covered by `closed`.
-    if (next.state === 'closed') return { changes, closed: true }
+    if (next.state === 'closed') return changes
   }
   if (next.headSha !== prev.headSha) changes.push({ kind: 'head', detail: `head:${prev.headSha.slice(0, 12)}->${next.headSha.slice(0, 12)}` })
   if (next.ci.rollup !== prev.ci.rollup) {
@@ -306,7 +308,7 @@ function diffSnapshots(prev, next) {
   for (const change of changes) {
     requireValue(CHANGE_KINDS.includes(change.kind), 'change kind is unknown')
   }
-  return { changes, closed: false }
+  return changes
 }
 
 function slaTransitions(prevAck, next, policy, nowMs) {
@@ -397,12 +399,13 @@ export function decideUpstreamWatch({ prev, next: nextRaw, tracking, policy, now
         closedSeen: next.state === 'closed',
         reopenReported: false,
         firstSeenMs: nowMs,
+        stateFlips: 0,
       }),
     }
   }
   validateAck(prev)
 
-  const { changes, closed } = diffSnapshots(prev.snapshot, next)
+  const changes = diffSnapshots(prev.snapshot, next)
   const transitions = next.state === 'open' ? slaTransitions(prev, next, p, nowMs) : []
   // Latched one-shot: a reopen-mismatch reports once. While the card stays
   // closed the digest would otherwise re-emit byte-identically every tick,
@@ -411,11 +414,10 @@ export function decideUpstreamWatch({ prev, next: nextRaw, tracking, policy, now
   const reopen = tracking.cardOpen === false && next.state === 'open' && !prev.reopenReported
   if (reopen) changes.push({ kind: 'reopen-mismatch', detail: 'closed-card-open-pr' })
 
-  // A retired close stays silent: the merge already produced its digest,
-  // and downstream retirement owns what follows.
   if (changes.length === 0 && transitions.length === 0) return { action: 'silent' }
-  if (closed && prev.closedSeen) return { action: 'silent' }
 
+  const lifecycleMoved = next.state !== prev.snapshot.state || next.merged !== prev.snapshot.merged
+  const stateFlips = (prev.stateFlips ?? 0) + (lifecycleMoved ? 1 : 0)
   const allChanges = [...changes, ...transitions]
   const sla = {
     response: prev.sla.response === 'breached' || transitions.some((change) => change.kind === 'sla-response-breach')
@@ -428,11 +430,13 @@ export function decideUpstreamWatch({ prev, next: nextRaw, tracking, policy, now
   // The digest identity folds the one-shot outcomes in: an SLA-only tick
   // after ack-loss can no longer re-emit the same digest, because the
   // latched sla markers distinguish "about to breach" from "breached".
+  // A re-closure needs its own key; an unchanged lifecycle keeps its pinned key.
   const digestSignature = signatureOf({
     next: nextSignature,
     changes: allChanges.map((change) => change.kind),
     sla,
     reopenReported: prev.reopenReported || reopen,
+    ...(stateFlips > 0 ? { stateFlips } : {}),
   })
   const digest = {
     action: 'digest',
@@ -449,9 +453,10 @@ export function decideUpstreamWatch({ prev, next: nextRaw, tracking, policy, now
       signature: nextSignature,
       snapshot: next,
       sla: Object.freeze(sla),
-      closedSeen: prev.closedSeen || closed,
+      closedSeen: next.state === 'closed',
       reopenReported: prev.reopenReported || reopen,
       firstSeenMs: prev.firstSeenMs,
+      stateFlips,
     }),
   }
   // Ack-loss convergence: the ack persist raced a delivered writer comment.

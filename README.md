@@ -9,7 +9,7 @@ so nothing is forgotten.
 - `src/decision-core/upstream-watcher.js` — pure decision core. No I/O:
   snapshot + ack in, at most one digest out
   (`silent`/`baseline`/`unknown`/`untracked`/`digest`/`latched`).
-- `test/upstream-watcher.test.mjs` — offline suite for the core (27 tests,
+- `test/upstream-watcher.test.mjs` — offline suite for the core (28 tests,
   `node --test`). No network, no credentials. Fixture identifiers are
   `DEMO-*` placeholders.
 - `src/manifest.js` — plugin manifest: worker capabilities plus the `pollPrs`
@@ -64,7 +64,7 @@ so nothing is forgotten.
 - `test/view-model.test.mjs` — offline suite for the view-model plus manifest
   UI-slot assertions (8 tests, `node --test`). No network, no credentials.
 - `test/setup.test.mjs` — offline suite for the worker setup + UI entries
-  (8 tests, `node --test`). No network, no credentials.
+  (11 tests, `node --test`). No network, no credentials.
 
 ## Policy
 

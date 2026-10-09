@@ -15,7 +15,7 @@ import {
 import { writerMarkerForDigest } from "../src/decision-core/upstream-watcher.js";
 
 const snapshot = JSON.parse(
-  readFileSync(fileURLToPath(new URL("./fixtures/tog2-lifecycle-snapshot.json", import.meta.url)), "utf8"),
+  readFileSync(fileURLToPath(new URL("./fixtures/typed-refs-lifecycle-snapshot.json", import.meta.url)), "utf8"),
 );
 const byNumber = (n) => snapshot.refs.find((ref) => ref.number === n);
 const REPO = "paperclipai/paperclip";
