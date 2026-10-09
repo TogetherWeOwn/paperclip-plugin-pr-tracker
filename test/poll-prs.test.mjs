@@ -7,7 +7,8 @@ import assert from 'node:assert/strict'
 import { decideUpstreamWatch } from '../src/decision-core/upstream-watcher.js'
 import {
   POLICY, RETRY, scopeTargets, etagHeaders, classifyHttpStatus,
-  backoffWithJitter, shouldRunTick, workerPolicy, runPollTick,
+  backoffWithJitter, shouldRunTick, workerPolicy, EXPLICIT_POLICY,
+  isTerminalDeliveryError, runPollTick,
 } from '../src/worker/poll-prs.js'
 
 const T0 = 1_758_000_000_000
@@ -105,7 +106,12 @@ test('non-fresh, non-304 reads resolve unknown and never silent', async () => {
 
 test('digest delivers once; failed delivery withholds the ack advance', async () => {
   const fakeDigest = { action: 'digest', dedupeKey: 'fp-1', nextAck: { sig: 'n1' } }
-  const input = { prev: null, next: {}, tracking: {}, nowMs: T0 }
+  const input = {
+    prev: null,
+    next: { repository: 'org/only', number: 1 },
+    tracking: { repository: 'org/only', number: 1, issueId: 'issue-1', identifier: 'DEMO-1', cardOpen: true },
+    nowMs: T0,
+  }
   const delivered = await runPollTick({
     pluginEnabled: true,
     scope: scopeTargets({}),
@@ -125,6 +131,25 @@ test('digest delivers once; failed delivery withholds the ack advance', async ()
   })
   assert.equal(withheld.wakes, 0)
   assert.deepEqual(withheld.results[0], { key: 'k#1', outcome: 'digest', delivered: false })
+})
+
+test('a throwing delivery withholds that digest and lets the tick finish', async () => {
+  const input = {
+    prev: null,
+    next: { repository: 'org/only', number: 1 },
+    tracking: { repository: 'org/only', number: 1, issueId: 'issue-1', identifier: 'DEMO-1', cardOpen: true },
+    nowMs: T0,
+  }
+  const out = await runPollTick({
+    pluginEnabled: true,
+    scope: scopeTargets({}),
+    collect: async () => [{ key: 'k#1', status: 200, input }],
+    decide: () => ({ action: 'digest', dedupeKey: 'fp-2', nextAck: { sig: 'n2' } }),
+    deliver: async () => { throw new Error('host unavailable') },
+  })
+  assert.equal(out.outcome, 'tick-complete')
+  assert.equal(out.wakes, 0)
+  assert.deepEqual(out.results[0], { key: 'k#1', outcome: 'digest', delivered: false, error: 'host unavailable' })
 })
 
 test('integration: real core baselines first sight, digests a head push, stays silent after', async () => {
@@ -164,4 +189,79 @@ test('integration: real core baselines first sight, digests a head push, stays s
   assert.equal(push.results[0].outcome, 'digest')
   assert.equal(push.wakes, 1)
   assert.equal(deliveries.length, 1)
+})
+
+test('EXPLICIT_POLICY never breaches: explicit refs report lifecycle only, never SLA', () => {
+  assert.deepEqual(EXPLICIT_POLICY, {
+    responseSlaMs: 8.64e15,
+    redCiSlaMs: 8.64e15,
+    silencePingMs: 8.64e15,
+  })
+})
+
+test('isTerminalDeliveryError converges only on the host finished-card refusal', () => {
+  for (const status of ['backlog', 'done', 'cancelled']) {
+    assert.equal(isTerminalDeliveryError(new Error(`Issue is not wakeable in status: ${status}`)), true, status)
+  }
+  for (const message of [
+    'Issue is blocked by unresolved blockers',
+    'Company is paused because its budget hard-stop was reached.',
+    'Issue has no assigned agent to wake',
+    'Worker RPC host is shutting down',
+    'host unavailable', 'fetch failed', '429 rate limited', '',
+  ]) {
+    assert.equal(isTerminalDeliveryError(new Error(message)), false, message || '(empty)')
+  }
+})
+
+test('a terminal delivery converges ack and ledger with zero wakes', async () => {
+  const input = {
+    prev: null,
+    next: { repository: 'org/only', number: 1 },
+    tracking: { repository: 'org/only', number: 1, issueId: 'issue-1', identifier: 'DEMO-1', cardOpen: true },
+    nowMs: T0,
+  }
+  const out = await runPollTick({
+    pluginEnabled: true,
+    scope: scopeTargets({}),
+    collect: async () => [{ key: 'k#1', status: 200, input }],
+    decide: () => ({ action: 'digest', dedupeKey: 'fp-9', nextAck: { sig: 'n9' } }),
+    deliver: async () => ({ delivered: false, terminal: true, error: 'Issue is not wakeable in status: done' }),
+  })
+  assert.equal(out.wakes, 0)
+  assert.deepEqual(out.results[0], {
+    key: 'k#1', outcome: 'digest', delivered: false, terminal: true,
+    error: 'Issue is not wakeable in status: done', ack: { sig: 'n9' },
+  })
+})
+
+test('a throwing delivering host: finished converges; holds and transient failures withhold', async () => {
+  const input = {
+    prev: null,
+    next: { repository: 'org/only', number: 1 },
+    tracking: { repository: 'org/only', number: 1, issueId: 'issue-1', identifier: 'DEMO-1', cardOpen: true },
+    nowMs: T0,
+  }
+  const tickWith = (message) => runPollTick({
+    pluginEnabled: true,
+    scope: scopeTargets({}),
+    collect: async () => [{ key: 'k#1', status: 200, input }],
+    decide: () => ({ action: 'digest', dedupeKey: 'fp-t', nextAck: { sig: 'nt' } }),
+    deliver: async () => { throw new Error(message) },
+  })
+
+  const finished = await tickWith('Issue is not wakeable in status: cancelled')
+  assert.equal(finished.results[0].terminal, true)
+  assert.deepEqual(finished.results[0].ack, { sig: 'nt' })
+
+  for (const message of [
+    'Issue is blocked by unresolved blockers',
+    'Company is paused because its budget hard-stop was reached.',
+    'host unavailable',
+  ]) {
+    const held = await tickWith(message)
+    assert.equal(held.results[0].delivered, false, message)
+    assert.equal(held.results[0].terminal, undefined, message)
+    assert.equal(held.results[0].ack, undefined, message)
+  }
 })

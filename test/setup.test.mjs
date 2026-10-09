@@ -67,7 +67,7 @@ function fakeCtx(over = {}) {
         wakes,
         async requestWakeup(issueId, companyId, opts) {
           wakes.push({ issueId, companyId, opts });
-          return over.wakeupResult ?? { ok: true };
+          return over.wakeupResult ?? { queued: true, runId: null };
         },
       },
       secrets: {
@@ -164,7 +164,7 @@ test("304 stays silent and performs no wake", async () => {
 });
 
 test("failed delivery withholds the ack advance", async () => {
-  const { ctx, wakes, store } = fakeCtx({ wakeupResult: false });
+  const { ctx, wakes, store } = fakeCtx({ wakeupResult: { queued: false, runId: null } });
   let head = HEAD_A;
   const api = setup(ctx, { ...OPTS, collect: () => collectWith(head)() });
   await api.tick();
@@ -246,6 +246,26 @@ test("F2: collector-mutated list ETags persist across ticks", async () => {
   });
   await api.tick();
   assert.equal(store.state.etags["https://example.invalid/list"], "list-etag-2");
+});
+
+test("an untracked read never overwrites stored tracking", async () => {
+  const { ctx, store } = fakeCtx();
+  let tracked = true;
+  const api = setup(ctx, {
+    ...OPTS,
+    collect: async () => [
+      {
+        key: KEY,
+        status: 200,
+        input: { prev: null, next: snapshot(HEAD_A), tracking: tracked ? TRACKING : null, nowMs: T0 },
+      },
+    ],
+  });
+  await api.tick();
+  assert.equal(store.state.tracking[KEY].issueId, "issue-7");
+  tracked = false;
+  await api.tick();
+  assert.equal(store.state.tracking[KEY].issueId, "issue-7");
 });
 
 test("entries: sidebar page, detail tab, widget, checklist", () => {

@@ -20,6 +20,8 @@
 
 import { createHash } from "node:crypto";
 import { normalizeSnapshot } from "../decision-core/upstream-watcher.js";
+import { issueLifecycle, pullLifecycle } from "../decision-core/ref-ledger.js";
+import { discoveryFilter } from "./ref-subscriptions.js";
 
 export const API_BASE = "https://api.github.com";
 export const USER_AGENT = "paperclip-pr-tracker/0.4.0";
@@ -100,7 +102,7 @@ export async function fetchAllPages(fetchImpl, url, { token, etag } = {}) {
     }
     if (res.status === 429) return { items, pages: null, etag: null, ok: false, rateLimited: true };
     if (res.status !== 200 || !Array.isArray(res.body)) {
-      return { items, pages: null, etag: null, ok: false, status: res.status };
+      return { items, pages: null, etag: null, ok: false, status: res.status === 200 ? 502 : res.status };
     }
     fetched += 1;
     items.push(...res.body);
@@ -113,6 +115,10 @@ export async function fetchAllPages(fetchImpl, url, { token, etag } = {}) {
     etag: lastEtag,
     ok: true,
   };
+}
+
+function authStopped(reads) {
+  return reads.some((read) => read.status === 401 || read.status === 403);
 }
 
 const RED_CONCLUSIONS = new Set(["failure", "timed_out", "action_required", "stale"]);
@@ -239,6 +245,17 @@ export function snapshotFromRest({
   };
 }
 
+export function pullLifecycleFromRest(pr = {}) {
+  return pullLifecycle({ state: pr.state === "closed" ? "closed" : "open", merged: pr.merged === true });
+}
+
+export function issueLifecycleFromRest(issue = {}) {
+  return issueLifecycle({
+    state: issue.state === "closed" ? "closed" : "open",
+    stateReason: issue.state_reason ?? null,
+  });
+}
+
 function prKey(repository, number) {
   return `${repository}#${number}`;
 }
@@ -265,7 +282,7 @@ export function createRestCollector({
     return fetchJson(fetchImpl, url, { token, etag });
   }
 
-  async function collectOrgRepo(repo, etags, token, prevAcks, reads) {
+  async function collectOrgRepo(repo, etags, token, prevAcks, reads, keep) {
     const listUrl = `${apiBase}/repos/${repo}/pulls?state=open&per_page=100`;
     const list = await fetchAllPages(fetchImpl, listUrl, { token, etag: etags[listUrl] });
     if (list.notModified) return;
@@ -275,15 +292,18 @@ export function createRestCollector({
     }
     if (list.etag) etags[listUrl] = list.etag;
     for (const item of list.items ?? []) {
+      if (authStopped(reads)) return;
+      if (!keep(repo, item.number)) continue;
       const key = prKey(repo, item.number);
       const prev = prevAcks?.[key];
       const headSha = item.head?.sha;
       const updatedAt = toMs(item.updated_at);
+      // updated_at has whole-second precision: skip only PRs settled before that read's second.
       if (
         prev?.snapshot
         && prev.snapshot.headSha === headSha
         && updatedAt !== null
-        && updatedAt <= prev.snapshot.fetchedAtMs
+        && updatedAt < Math.floor(prev.snapshot.fetchedAtMs / 1000) * 1000
       ) {
         reads.push({ key, status: 304 });
         continue;
@@ -294,6 +314,7 @@ export function createRestCollector({
 
   async function collectOnePr(repo, number, kind, etags, token) {
     const key = prKey(repo, number);
+    const nowMs = Date.now();
     const urls = {
       pr: `${apiBase}/repos/${repo}/pulls/${number}`,
       comments: `${apiBase}/repos/${repo}/issues/${number}/comments?per_page=100`,
@@ -310,7 +331,7 @@ export function createRestCollector({
       const etag = prRes.headers?.get?.("etag");
       if (etag) bodies.set(urls.pr, { etag, body: prBody });
     } else {
-      return { key, status: prRes.status === 403 && prRes.rateLimited ? 429 : prRes.status };
+      return { key, status: prRes.status === 200 ? 502 : prRes.status };
     }
     const headSha = prBody.head?.sha;
     // Array endpoints paginate; the check-runs and search endpoints answer
@@ -327,11 +348,14 @@ export function createRestCollector({
       ),
     ]);
     const parts = [commentsRes, reviewRes, reviewsRes];
-    if (parts.some((p) => !p.ok) || (checksRes.status !== 200 && checksRes.status !== 404)) {
-      const rateLimited = parts.some((p) => p.rateLimited) || checksRes.status === 429;
-      return { key, status: rateLimited ? 429 : (parts.find((p) => p.status)?.status ?? 500) };
+    const checks = checksRes.status === 200 && !checksRes.body ? { status: 502 } : checksRes;
+    if (parts.some((p) => !p.ok) || (checks.status !== 200 && checks.status !== 404)) {
+      const rateLimited = parts.some((p) => p.rateLimited) || checks.status === 429;
+      const statuses = [...parts.map((p) => p.status), checks.status]
+        .filter((s) => s !== undefined && s !== 200 && s !== 404);
+      const status = statuses.find((s) => s === 401 || s === 403) ?? statuses[0] ?? 500;
+      return { key, status: rateLimited ? 429 : status };
     }
-    const nowMs = Date.now();
     const snapshot = snapshotFromRest({
       repository: repo,
       pr: prBody,
@@ -351,6 +375,7 @@ export function createRestCollector({
     return {
       key,
       status: 200,
+      lifecycle: pullLifecycleFromRest(prBody),
       input: {
         prev: null,
         next: snapshot,
@@ -369,7 +394,7 @@ export function createRestCollector({
     };
   }
 
-  async function collectUpstreamRepo(repo, etags, token, prevAcks, reads) {
+  async function collectUpstreamRepo(repo, etags, token, prevAcks, reads, keep) {
     if (!upstreamAuthor) {
       reads.push({ key: `scope:${repo}`, status: 0 });
       return;
@@ -390,17 +415,49 @@ export function createRestCollector({
     const etag = res.headers?.get?.("etag");
     if (etag) etags[url] = etag;
     for (const item of res.body.items) {
+      if (authStopped(reads)) return;
+      if (!keep(repo, item.number)) continue;
       reads.push(await collectOnePr(repo, item.number, "upstream", etags, token, prevAcks));
     }
   }
 
-  return async function collect({ scope, etags = {}, token, prevAcks = {} } = {}) {
+  // No ETag for issue reads: a 304 carries no body, and a persisted ETag would
+  // suppress the retry of an undelivered transition.
+  async function collectSubscribedIssue(ref, token) {
+    const url = `${apiBase}/repos/${ref.repository}/issues/${ref.number}`;
+    const res = await get(url, undefined, token);
+    if (res.status !== 200) return { key: ref.key, status: res.status };
+    if (res.body?.pull_request) return { key: ref.key, status: 409 };
+    let lifecycle;
+    try {
+      lifecycle = issueLifecycleFromRest(res.body);
+    } catch {
+      return { key: ref.key, status: 422 };
+    }
+    return {
+      key: ref.key,
+      status: 200,
+      lifecycle,
+      tracking: resolveTracking(ref.repository, ref.number, res.body),
+    };
+  }
+
+  return async function collect({ scope, etags = {}, token, prevAcks = {}, subscriptions = null } = {}) {
     const reads = [];
+    const keep = discoveryFilter(subscriptions);
     for (const repo of scope?.org ?? []) {
-      await collectOrgRepo(repo, etags, token, prevAcks, reads);
+      if (authStopped(reads)) return reads;
+      await collectOrgRepo(repo, etags, token, prevAcks, reads, keep);
     }
     for (const repo of scope?.upstream ?? []) {
-      await collectUpstreamRepo(repo, etags, token, prevAcks, reads);
+      if (authStopped(reads)) return reads;
+      await collectUpstreamRepo(repo, etags, token, prevAcks, reads, keep);
+    }
+    for (const ref of subscriptions?.refs ?? []) {
+      if (authStopped(reads)) return reads;
+      reads.push(ref.kind === "issue"
+        ? await collectSubscribedIssue(ref, token)
+        : await collectOnePr(ref.repository, ref.number, "upstream", etags, token));
     }
     return reads;
   };

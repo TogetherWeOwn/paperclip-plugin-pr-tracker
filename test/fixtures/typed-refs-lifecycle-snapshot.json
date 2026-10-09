@@ -1,0 +1,16 @@
+{
+  "observedAt": "2026-10-08",
+  "repository": "paperclipai/paperclip",
+  "refs": [
+    { "number": 13113, "kind": "pull_request", "state": "closed", "merged": false, "merged_at": null, "merge_commit_sha": "84815d068dfa786bb0f30ce64fbeaa8cd97a5382", "closed_at": "2026-09-10T18:07:39Z" },
+    { "number": 10317, "kind": "pull_request", "state": "open", "merged": false, "merged_at": null, "merge_commit_sha": "2c341f711c128d170a0887c46579181cf54532f6", "closed_at": null },
+    { "number": 11199, "kind": "issue", "state": "open", "state_reason": null, "closed_at": null },
+    { "number": 12611, "kind": "pull_request", "state": "open", "merged": false, "merged_at": null, "merge_commit_sha": null, "closed_at": null },
+    { "number": 11910, "kind": "pull_request", "state": "open", "merged": false, "merged_at": null, "merge_commit_sha": null, "closed_at": null },
+    { "number": 12835, "kind": "pull_request", "state": "open", "merged": false, "merged_at": null, "merge_commit_sha": null, "closed_at": null },
+    { "number": 13024, "kind": "pull_request", "state": "open", "merged": false, "merged_at": null, "merge_commit_sha": null, "closed_at": null },
+    { "number": 13069, "kind": "pull_request", "state": "open", "merged": false, "merged_at": null, "merge_commit_sha": null, "closed_at": null },
+    { "number": 13663, "kind": "pull_request", "state": "closed", "merged": false, "merged_at": null, "merge_commit_sha": "b0291d57a8f665cd4a080a7de198871fdca67ae1", "closed_at": "2026-09-19T06:09:37Z" },
+    { "number": 12775, "kind": "pull_request", "state": "open", "merged": false, "merged_at": null, "merge_commit_sha": null, "closed_at": null }
+  ]
+}

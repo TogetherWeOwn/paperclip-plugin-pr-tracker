@@ -17,14 +17,16 @@
 //
 // REST collection (`collect`) is caller-provided and must honor the core
 // contract: failed/partial reads resolve to `unknown`, never `silent`.
-// Ack and ETag persistence happens ONLY after durable delivery.
+// Ack persistence happens ONLY after durable delivery. List ETags persist only
+// when every read converged, so an undelivered or unknown PR is re-read next tick.
 
 import {
   decideUpstreamWatch,
   renderWriterProposal,
   writerMarkerForDigest,
 } from "../decision-core/upstream-watcher.js";
-import { runPollTick, shouldRunTick } from "./poll-prs.js";
+import { isTerminalDeliveryError, runPollTick, shouldRunTick } from "./poll-prs.js";
+import { normalizeSubscriptions } from "./ref-subscriptions.js";
 import {
   applyFilters,
   defaultFilter,
@@ -53,6 +55,7 @@ export function setup(ctx, options = {}) {
     configPath,
     secretRef,
     scope,
+    subscriptions: rawSubscriptions = null,
     collect,
     enabledProbe = async () => true,
     namespace = STATE_NAMESPACE,
@@ -61,6 +64,8 @@ export function setup(ctx, options = {}) {
   if (!companyId) throw new Error("setup: companyId is required");
   if (!secretRef) throw new Error("setup: secretRef is required");
   if (typeof collect !== "function") throw new Error("setup: collect() is required");
+  const subscriptions = rawSubscriptions ? normalizeSubscriptions(rawSubscriptions) : null;
+  const refs = Object.fromEntries((subscriptions?.refs ?? []).map((ref) => [ref.key, ref]));
 
   const stateAddr = {
     scopeKind: "plugin",
@@ -72,12 +77,13 @@ export function setup(ctx, options = {}) {
   async function loadPollState() {
     const stored = await ctx.state.get(stateAddr);
     if (!stored || typeof stored !== "object") {
-      return { etags: {}, acks: {}, tracking: {} };
+      return { etags: {}, acks: {}, tracking: {}, ledger: {} };
     }
     return {
       etags: stored.etags ?? {},
       acks: stored.acks ?? {},
       tracking: stored.tracking ?? {},
+      ledger: stored.ledger ?? {},
     };
   }
 
@@ -85,23 +91,39 @@ export function setup(ctx, options = {}) {
     await ctx.state.set({ ...stateAddr, state: next });
   }
 
-  /** Deliver one digest: wake the tracking task, exactly once. */
+  /**
+   * Deliver one digest: wake the tracking task with the digest's idempotency
+   * key. The host does not dedupe on that key, so a lost ack can post the same
+   * wake twice. Delivered means queued:true. Only a finished card is terminal;
+   * other throws, including blocker and budget holds, stay retryable.
+   */
   async function deliver(decided) {
     const proposal = renderWriterProposal(decided);
     const marker = writerMarkerForDigest(decided);
-    const res = await ctx.issues.requestWakeup(proposal.issueId, companyId, {
-      reason: WAKE_REASON,
-      contextSource: proposal.sourceId,
-      idempotencyKey: marker,
-    });
-    return { delivered: res !== false };
+    let res;
+    try {
+      res = await ctx.issues.requestWakeup(proposal.issueId, companyId, {
+        reason: WAKE_REASON,
+        contextSource: proposal.sourceId,
+        idempotencyKey: marker,
+      });
+    } catch (error) {
+      if (isTerminalDeliveryError(error)) {
+        const message = error instanceof Error ? error.message : String(error);
+        ctx.logger.warn("tracking card is finished; digest dropped, ref settled", { issueId: proposal.issueId, message });
+        return { delivered: false, terminal: true, error: message };
+      }
+      throw error;
+    }
+    return { delivered: res?.queued === true };
   }
 
   async function tick() {
     if (!(await enabledProbe())) {
       return { outcome: "stopped-disabled", reads: 0, wakes: 0, results: [] };
     }
-    const { etags, acks, tracking } = await loadPollState();
+    const { etags, acks, tracking, ledger } = await loadPollState();
+    const etagsBefore = { ...etags };
     const wrappedCollect = async (args) => {
       // F2: the collector mutates this same `etags` object with list-URL
       // ETags, so it (not a pre-tick copy) is what gets persisted below.
@@ -122,17 +144,29 @@ export function setup(ctx, options = {}) {
     const out = await runPollTick({
       pluginEnabled: shouldRunTick({ pluginEnabled: true }),
       scope,
+      subscriptions,
       etags,
       acks,
+      ledgers: ledger,
+      refs,
       collect: wrappedCollect,
       deliver,
       decide: decideUpstreamWatch,
     });
     const nextAcks = { ...acks };
+    const nextLedger = { ...ledger };
     for (const r of out.results) {
-      if (r.ack !== undefined && r.delivered !== false) nextAcks[r.key] = r.ack;
+      // A finished tracking card converges: its wake can never queue, so ack and ledger advance with zero wakes.
+      // Other failures keep delivered:false without terminal and withhold state.
+      const settled = r.delivered !== false || r.terminal === true;
+      if (r.ack !== undefined && settled) nextAcks[r.key] = r.ack;
+      if (r.ledger !== undefined && settled) nextLedger[r.key] = r.ledger;
     }
-    await savePollState({ etags, acks: nextAcks, tracking });
+    // Only discovered PRs are read through list ETags; explicit refs and scope diagnostics never need one.
+    const listsSettled = out.results.every((r) => refs[r.key] || r.key.startsWith("scope:")
+      || r.terminal === true
+      || (r.delivered !== false && r.outcome !== "unknown"));
+    await savePollState({ etags: listsSettled ? etags : etagsBefore, acks: nextAcks, tracking, ledger: nextLedger });
     return out;
   }
 

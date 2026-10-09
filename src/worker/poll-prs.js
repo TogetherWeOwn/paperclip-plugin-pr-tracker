@@ -21,8 +21,13 @@
 // `upstream-pr-compliance` signal plus owner-report line. The decision core
 // only reports single-tick outcomes; the ladder state lives in `plugin.state`
 // (ack signatures + SLA latches), never in the core.
+//
+// TYPED REFS. A read for an explicit subscription carries its lifecycle; the
+// ledger (`../decision-core/ref-ledger.js`) decides retirement from that
+// lifecycle and the ref's policy. `unknown` outcomes never touch the ledger.
 
-import { decideUpstreamWatch } from "../decision-core/upstream-watcher.js";
+import { decideUpstreamWatch, trackingFault } from "../decision-core/upstream-watcher.js";
+import { decideIssueLifecycle, decideLedger } from "../decision-core/ref-ledger.js";
 
 export const HOUR_MS = 3_600_000;
 export const DAY_MS = 24 * HOUR_MS;
@@ -108,27 +113,79 @@ export function workerPolicy() {
 }
 
 /**
+ * Explicit typed refs are other people's upstream PRs: the tick reports
+ * lifecycle transitions only, never owner-compliance SLA breaches. The core
+ * has no SLA-off switch, so explicit refs run under a policy that never
+ * breaches (the core's maximum millisecond count). Discovered org/upstream
+ * PRs keep the 4h/4h/7d worker policy.
+ */
+export const EXPLICIT_POLICY = Object.freeze({
+  responseSlaMs: 8.64e15,
+  redCiSlaMs: 8.64e15,
+  silencePingMs: 8.64e15,
+});
+
+// Only the host's finished-card refusal is permanent; blocker and budget holds clear on their own.
+export function isTerminalDeliveryError(error) {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /Issue is not wakeable in status: (backlog|done|cancelled)\b/.test(message);
+}
+
+function ledgerOf(entry, nextLedger) {
+  return nextLedger ? { ...entry, ledger: nextLedger } : entry;
+}
+
+async function attemptDelivery(deliver, decided) {
+  try {
+    const res = await deliver(decided);
+    if (res && res.terminal === true) {
+      return { delivered: false, terminal: true, ...(res.error ? { error: res.error } : {}) };
+    }
+    return res;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (isTerminalDeliveryError(error)) {
+      return { delivered: false, terminal: true, error: message };
+    }
+    return { delivered: false, error: message };
+  }
+}
+
+function hasTrackingIdentity(tracking) {
+  return typeof tracking.issueId === "string" && tracking.issueId.length > 0
+    && typeof tracking.identifier === "string" && tracking.identifier.length > 0;
+}
+
+/**
  * Run one `pollPrs` tick.
  *
  * @param {object} args
  * @param {boolean} args.pluginEnabled - live enabled flag; false stops everything.
  * @param {object} args.scope - result of `scopeTargets()`.
+ * @param {object|null} [args.subscriptions] - normalized typed refs, passed to `collect`.
  * @param {Map|object} [args.etags] - stored per-resource ETags (conditional reads).
  * @param {object} [args.acks] - persisted per-PR ack signatures + SLA latches.
+ * @param {object} [args.ledgers] - persisted per-typed-ref ledger records.
+ * @param {object} [args.refs] - normalized subscription refs keyed by `repo#number`.
  * @param {object} [args.cardMarkers] - tracking-task writer markers per PR, for ack-loss convergence.
- * @param {Function} args.collect - `async ({scope, etags}) => [{key, status, input?, etag?}]`,
+ * @param {number} [args.nowMs] - collector clock for ledger history.
+ * @param {Function} args.collect - `async ({scope, etags, subscriptions}) => [{key, status, input?, lifecycle?, tracking?, etag?}]`,
  *   where each fresh read's `input` is the collector-built decision-core input
  *   `{ prev, next, tracking, nowMs }` (policy and cardMarkers are injected here).
  * @param {Function} [args.deliver] - `async (decision) => {delivered: boolean}`;
- *   the caller persists `nextAck` only when delivery is durable.
+ *   the caller persists `nextAck` and `ledger` only when delivery is durable.
  * @param {Function} [args.decide] - defaults to `decideUpstreamWatch`; injectable for tests.
  */
 export async function runPollTick({
   pluginEnabled,
   scope,
+  subscriptions = null,
   etags = {},
   acks = {},
+  ledgers = {},
+  refs = {},
   cardMarkers = {},
+  nowMs = Date.now(),
   collect,
   deliver = async () => ({ delivered: true }),
   decide = decideUpstreamWatch,
@@ -140,7 +197,7 @@ export async function runPollTick({
     throw new Error("runPollTick: collect() is required");
   }
   const policy = workerPolicy();
-  const reads = await collect({ scope, etags });
+  const reads = await collect({ scope, etags, subscriptions });
   const results = [];
   let wakes = 0;
   for (const read of reads) {
@@ -153,20 +210,95 @@ export async function runPollTick({
       results.push({ key: read.key, outcome: "unknown", via: classification });
       continue;
     }
+    const ref = refs[read.key] ?? null;
+    const prevLedger = ledgers[read.key] ?? null;
     const markers = cardMarkers[read.key] ?? [];
-    const decided = decide({
-      ...read.input,
-      prev: acks[read.key] ?? read.input.prev ?? null,
-      policy,
-      cardMarkers: markers,
+    const lifecycleLedger = (lifecycle) => decideLedger({
+      policy: ref.retireLedgerWhen,
+      equivalence: ref.equivalence,
+      prev: prevLedger,
+      lifecycle,
+      atMs: nowMs,
     });
+
+    if (read.lifecycle?.kind === "issue") {
+      if (!ref) throw new Error(`runPollTick: issue read ${read.key} has no subscription ref`);
+      const issueLedger = lifecycleLedger(read.lifecycle);
+      const tracking = read.tracking ?? null;
+      if (tracking !== null && !hasTrackingIdentity(tracking)) {
+        results.push({ key: read.key, outcome: "unknown", via: "invalid-tracking" });
+        continue;
+      }
+      if (tracking !== null && (tracking.repository !== ref.repository || tracking.number !== ref.number)) {
+        results.push({ key: read.key, outcome: "unknown", via: "tracking-mismatch" });
+        continue;
+      }
+      const decided = decideIssueLifecycle({
+        prevLedger,
+        nextLedger: issueLedger,
+        tracking,
+        repository: ref.repository,
+        number: ref.number,
+        cardMarkers: markers,
+      });
+      if (decided.action === "digest") {
+        const delivery = await attemptDelivery(deliver, decided);
+        if (delivery && delivery.delivered === true) {
+          wakes += 1;
+          results.push(ledgerOf({ key: read.key, outcome: "digest", delivered: true }, issueLedger));
+        } else if (delivery && delivery.terminal === true) {
+          // The tracking card is finished: the wake can never queue. Advance the ledger so the ref retires; zero wakes.
+          results.push(ledgerOf({
+            key: read.key, outcome: "digest", delivered: false, terminal: true,
+            ...(delivery?.error ? { error: delivery.error } : {}),
+          }, issueLedger));
+        } else {
+          results.push({ key: read.key, outcome: "digest", delivered: false, ...(delivery?.error ? { error: delivery.error } : {}) });
+        }
+        continue;
+      }
+      results.push(ledgerOf({ key: read.key, outcome: decided.action }, issueLedger));
+      continue;
+    }
+
+    const fault = read.input?.tracking ? trackingFault(read.input.tracking, read.input.next) : null;
+    if (fault !== null) {
+      results.push({ key: read.key, outcome: "unknown", via: fault });
+      continue;
+    }
+    const nextLedger = ref && read.lifecycle ? lifecycleLedger(read.lifecycle) : null;
+    // Post-terminal noise on a retired ref stays silent; a lifecycle transition still digests once.
+    const postTerminalNoise = nextLedger !== null
+      && prevLedger?.state === "retired"
+      && nextLedger.state === "retired"
+      && nextLedger.lifecycle.terminal !== "open"
+      && prevLedger.lifecycle.terminal === nextLedger.lifecycle.terminal;
+    const decided = postTerminalNoise
+      ? { action: "silent" }
+      : decide({
+        ...read.input,
+        prev: acks[read.key] ?? read.input.prev ?? null,
+        policy: ref ? EXPLICIT_POLICY : policy,
+        cardMarkers: markers,
+      });
+    const persistedLedger = decided.action === "unknown" ? null : nextLedger;
     if (decided.action === "digest") {
-      const delivery = await deliver(decided);
+      const delivery = await attemptDelivery(deliver, decided);
       if (delivery && delivery.delivered === true) {
         wakes += 1;
-        results.push({ key: read.key, outcome: "digest", delivered: true, ack: decided.nextAck });
+        const entry = { key: read.key, outcome: "digest", delivered: true };
+        if (decided.nextAck !== undefined) entry.ack = decided.nextAck;
+        results.push(ledgerOf(entry, persistedLedger));
+      } else if (delivery && delivery.terminal === true) {
+        // The tracking card is finished: the wake can never queue. Advance ack and ledger; zero wakes.
+        const entry = {
+          key: read.key, outcome: "digest", delivered: false, terminal: true,
+          ...(delivery?.error ? { error: delivery.error } : {}),
+        };
+        if (decided.nextAck !== undefined) entry.ack = decided.nextAck;
+        results.push(ledgerOf(entry, persistedLedger));
       } else {
-        results.push({ key: read.key, outcome: "digest", delivered: false });
+        results.push({ key: read.key, outcome: "digest", delivered: false, ...(delivery?.error ? { error: delivery.error } : {}) });
       }
       continue;
     }
@@ -175,7 +307,7 @@ export async function runPollTick({
     const entry = { key: read.key, outcome: decided.action };
     if (decided.nextAck !== undefined) entry.ack = decided.nextAck;
     if (decided.detail !== undefined) entry.detail = decided.detail;
-    results.push(entry);
+    results.push(ledgerOf(entry, persistedLedger));
   }
   return { outcome: "tick-complete", reads: reads.length, wakes, results };
 }

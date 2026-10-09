@@ -215,6 +215,29 @@ test("collector emits a fresh valid read, then skips on unchanged head", async (
   assert.deepEqual(second, [{ key: "org/repo#7", status: 304 }]);
 });
 
+test("an org PR updated in the second its last read began is re-read, not skipped", async () => {
+  const scope = { upstream: [], org: ["org/repo"] };
+  const prevAcks = { "org/repo#7": { snapshot: { headSha: HEAD_A, fetchedAtMs: T0 + 500 } } };
+  const sameSecond = createRestCollector({
+    fetchImpl: routeFetch([
+      ["/pulls?state=open", { body: [{ number: 7, head: { sha: HEAD_A }, updated_at: new Date(T0).toISOString() }] }],
+      ...detailRoutes(),
+    ]),
+    ourLogins: ["owner-x"],
+    resolveTracking: () => TRACK,
+  });
+  const reread = await sameSecond({ scope, etags: {}, token: "tok", prevAcks });
+  assert.equal(reread[0].status, 200);
+
+  const earlier = createRestCollector({
+    fetchImpl: routeFetch([
+      ["/pulls?state=open", { body: [{ number: 7, head: { sha: HEAD_A }, updated_at: new Date(T0 - 1000).toISOString() }] }],
+    ]),
+    resolveTracking: () => TRACK,
+  });
+  assert.deepEqual(await earlier({ scope, etags: {}, token: "tok", prevAcks }), [{ key: "org/repo#7", status: 304 }]);
+});
+
 test("malformed detail maps to 422, never a crashing fresh read", async () => {
   const bad = detailRoutes({ head: {} });
   const collect = createRestCollector({

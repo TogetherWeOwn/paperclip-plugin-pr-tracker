@@ -9,7 +9,7 @@ so nothing is forgotten.
 - `src/decision-core/upstream-watcher.js` — pure decision core. No I/O:
   snapshot + ack in, at most one digest out
   (`silent`/`baseline`/`unknown`/`untracked`/`digest`/`latched`).
-- `test/upstream-watcher.test.mjs` — offline suite for the core (27 tests,
+- `test/upstream-watcher.test.mjs` — offline suite for the core (28 tests,
   `node --test`). No network, no credentials. Fixture identifiers are
   `DEMO-*` placeholders.
 - `src/manifest.js` — plugin manifest: worker capabilities plus the `pollPrs`
@@ -22,7 +22,7 @@ so nothing is forgotten.
   projection. No rendering; the host SDK owns that.
 - `src/worker/setup.js` — thin host adapter: `setup(ctx, options)` registers
   the `pollPrs` job, resolves the read-only secret ref, loads/saves
-  ack+ETag+tracking state, delivers digests via idempotent task wakes, and
+  ack+ETag+tracking state, delivers digests via task wakes, and
   exposes `getData`/`performAction` for the UI bridges. REST collection
   stays injected and fail-loud (`unknown`, never `silent`).
 - `src/ui/entries.js` — UI bundle entry models behind the manifest
@@ -32,6 +32,20 @@ so nothing is forgotten.
   with head-SHA skip, per-PR detail mapping (CI rollup, mergeable, review
   verdict, threads/comments as hashes, response times) to core snapshots.
   Rate-limited 403s normalize to 429; malformed reads map to `unknown`.
+- `src/worker/ref-subscriptions.js` — typed upstream-ref contract: explicit
+  `(repository, kind, number)` refs with a retire policy and optional
+  equivalence evidence. Duplicates, excluded numbers and malformed input are
+  refused; discovery drops refs the registry already covers or excludes.
+- `src/decision-core/ref-ledger.js` — pure typed-ref lifecycle. Only an
+  explicit `merged === true` proves a merge. `merged_or_closed` retires on a
+  terminal state; `equivalent_fix_verified` retires only on recorded
+  equivalence evidence, never on closure. Post-terminal noise on a retired ref
+  stays silent; each lifecycle transition, including a reopen, digests once.
+  Issue digests reuse the writer marker.
+- `test/ref-subscriptions.test.mjs`, `test/ref-ledger.test.mjs`,
+  `test/collect-subscriptions.test.mjs`, `test/ref-tick.test.mjs` — offline
+  suites over `test/fixtures/`: all ten refs covered, exclusions held, PR and
+  issue routing, unknown reads never retire, delivery-gated ledger, auth halt.
 - `scripts/pack.sh` — mirrors dependency-free ESM into `dist/` with the two
   manifest entrypoints (`npm run build` wiring rides the export).
 - `src/worker/poll-prs.js` — `pollPrs` collector. Pure and dependency-free:
@@ -43,14 +57,14 @@ so nothing is forgotten.
   durable delivery; failed delivery withholds the advance so the retry
   converges.
 - `test/collect-rest.test.mjs` — offline suite for the REST collector
-  (8 tests, `node --test`). No network, no credentials.
-- `test/poll-prs.test.mjs` — offline suite for the collector (11 tests),
+  (9 tests, `node --test`). No network, no credentials.
+- `test/poll-prs.test.mjs` — offline suite for the collector (12 tests),
   ending in a real-core integration pass: baseline first sight, digest a head
   push, deliver exactly once.
 - `test/view-model.test.mjs` — offline suite for the view-model plus manifest
   UI-slot assertions (8 tests, `node --test`). No network, no credentials.
 - `test/setup.test.mjs` — offline suite for the worker setup + UI entries
-  (8 tests, `node --test`). No network, no credentials.
+  (11 tests, `node --test`). No network, no credentials.
 
 ## Policy
 
