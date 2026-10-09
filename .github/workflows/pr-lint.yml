@@ -93,12 +93,12 @@ jobs:
                   n += 1
               return n
 
-          def header_errors(text):
+          def header_errors(text, limit=100):
               errs = []
               if not HEADER.match(text):
                   errs.append("not a Conventional Commits header")
-              if len(text) > 100:
-                  errs.append(f"{len(text)} chars (max 100)")
+              if len(text) > limit:
+                  errs.append(f"{len(text)} chars (max {limit})")
               if text.rstrip().endswith("."):
                   errs.append("ends with a period")
               return errs
@@ -122,7 +122,9 @@ jobs:
                   if header_errors(title):
                       print(f"::warning::{author} title '{title}' is not conventional.")
                   sys.exit(0)
-              errs = header_errors(title)
+              # Squash adds " (#N)" to the title, which main's commit check limits to 100.
+              # Revert titles are skipped here, as main's commit check already skips them.
+              errs = [] if title.startswith('Revert "') else header_errors(title, limit=92)
               if errs:
                   failed = True
                   print(f"::error title=PR title::'{title}': {'; '.join(errs)}. {HELP}")
