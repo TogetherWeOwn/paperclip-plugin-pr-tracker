@@ -1,0 +1,168 @@
+name: PR lint
+
+# TogetherWeOwn GitHub standard, one-click template for new repos.
+# Always an error: Conventional Commits title, and a commit on the default branch that is not one.
+# PR_STANDARDS_MODE ("warn" or "error") sets the level for the rest: an empty body and the
+# PR template sections (Thinking Path, What Changed, Verification, Risks, Model Used, and
+# Linked Issues or Issue Description for feat/fix/perf/refactor/security). Land it in "warn",
+# clear the open PRs, then flip to "error".
+# Private repos: set REQUIRE_CARD_REF to "true" so every PR links its tracking card.
+# Set INTERNAL_ID_PREFIXES to a comma- or pipe-separated list (e.g. "ABC,XYZ") to flag
+# org-specific ticket ids; empty means a generic ticket-like pattern.
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-lint-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  REQUIRE_CARD_REF: "false"
+  INTERNAL_ID_LEVEL: "warning" # or "error" to fail a PR that carries an internal ticket id
+  INTERNAL_ID_PREFIXES: "" # e.g. "ABC,XYZ"; empty means a generic ticket-like pattern
+  PR_STANDARDS_MODE: "warn"
+
+jobs:
+  pr-lint:
+    name: pr-lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check title, body and commits
+        env:
+          EVENT: ${{ github.event_name }}
+          TITLE: ${{ github.event.pull_request.title }}
+          BODY: ${{ github.event.pull_request.body }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          COMMITS: ${{ toJSON(github.event.commits) }}
+        run: |-
+          python3 - <<'PYEOF'
+          import json, os, re, sys
+
+          TYPES = "feat|fix|perf|refactor|test|docs|build|ci|chore|revert|style|security"
+          HEADER = re.compile(rf"^({TYPES})(\([A-Za-z0-9._/,-]+\))?!?: \S.*$")
+          def build_internal_id():
+              raw = (os.environ.get("INTERNAL_ID_PREFIXES") or "").strip()
+              if raw:
+                  parts = [p.strip() for p in re.split(r"[,\s|]+", raw) if p.strip()]
+                  if parts:
+                      return re.compile(r"\b(" + "|".join(re.escape(p) for p in parts) + r")-\d+\b")
+              return re.compile(r"\b[A-Z]{2,10}-\d+\b")
+          INTERNAL_ID = build_internal_id()
+          HELP = ("Expected a Conventional Commits header, e.g. 'fix(auth): refuse expired sudo "
+                  "sessions'. Allowed types: " + TYPES.replace("|", ", ") + ".")
+
+          LIGHT = {"docs", "chore", "build", "ci", "style", "test", "revert"}
+          # (heading, minimum real items, skipped for LIGHT types)
+          SECTIONS = [
+              ("Thinking Path", 3, False),
+              ("Linked Issues or Issue Description", 1, True),
+              ("What Changed", 1, False),
+              ("Verification", 1, False),
+              ("Risks", 1, False),
+              ("Model Used", 1, False),
+          ]
+
+          def parse_sections(text):
+              out, cur, buf = {}, None, []
+              for line in text.splitlines():
+                  m = re.match(r"^##\s+(.+?)\s*#*\s*$", line)
+                  if m:
+                      if cur is not None:
+                          out[cur] = "\n".join(buf)
+                      cur, buf = m.group(1).strip().lower(), []
+                  elif cur is not None:
+                      buf.append(line)
+              if cur is not None:
+                  out[cur] = "\n".join(buf)
+              return out
+
+          def real_items(content):
+              n = 0
+              for raw in content.splitlines():
+                  line = re.sub(r"^\s*(?:>\s*)*(?:[-*]\s+|\d+[.)]\s+)?", "", raw).strip()
+                  if len(line) < 6 or re.fullmatch(r"\[[^\]]*\]", line) or line.endswith((" ...", " …")):
+                      continue
+                  n += 1
+              return n
+
+          def header_errors(text):
+              errs = []
+              if not HEADER.match(text):
+                  errs.append("not a Conventional Commits header")
+              if len(text) > 100:
+                  errs.append(f"{len(text)} chars (max 100)")
+              if text.rstrip().endswith("."):
+                  errs.append("ends with a period")
+              return errs
+
+          def internal_id_notes(text, where):
+              if INTERNAL_ID.search(text or ""):
+                  level = "error" if os.environ.get("INTERNAL_ID_LEVEL") == "error" else "warning"
+                  print(f"::{level} title=Internal id in {where}::" +
+                        "Keep internal ticket ids out of public PR text.")
+                  return level == "error"
+              return False
+
+          mode = os.environ.get("PR_STANDARDS_MODE", "warn")
+          strict = mode == "error"
+          failed = False
+          if os.environ.get("EVENT") == "pull_request":
+              title = (os.environ.get("TITLE") or "").strip()
+              body = os.environ.get("BODY") or ""
+              author = os.environ.get("AUTHOR") or ""
+              if author.endswith("[bot]") and author.startswith(("dependabot", "renovate")):
+                  if header_errors(title):
+                      print(f"::warning::{author} title '{title}' is not conventional.")
+                  sys.exit(0)
+              errs = header_errors(title)
+              if errs:
+                  failed = True
+                  print(f"::error title=PR title::'{title}': {'; '.join(errs)}. {HELP}")
+              text = re.sub(r"<!--.*?-->", "", body, flags=re.S)
+              if len(re.sub(r"\s", "", text)) < 40:
+                  if strict:
+                      failed = True
+                      print("::error title=PR body::The description is empty. Say what changed, "
+                            "why, and how it was tested.")
+                  else:
+                      print("::warning title=PR body::The description looks empty.")
+              kind = re.match(rf"^({TYPES})", title)
+              light = bool(kind) and kind.group(1) in LIGHT
+              sections = parse_sections(text)
+              for name, minimum, skip_light in SECTIONS:
+                  if skip_light and light:
+                      continue
+                  if real_items(sections.get(name.lower(), "")) < minimum:
+                      if strict:
+                          failed = True
+                      print(f"::{'error' if strict else 'warning'} title=PR body::Section '## {name}' "
+                            f"is missing or has fewer than {minimum} real item(s). Follow the PR template.")
+              if os.environ.get("REQUIRE_CARD_REF") == "true" and not INTERNAL_ID.search(body):
+                  failed = True
+                  print("::error title=Card reference::Add 'Refs: <card-id>' to the PR body.")
+              failed = internal_id_notes(title, "the title") or failed
+              if internal_id_notes(body, "the body"):
+                  failed = True
+          else:
+              for c in json.loads(os.environ.get("COMMITS") or "[]") or []:
+                  subject = (c.get("message") or "").splitlines()[0] if c.get("message") else ""
+                  if subject.startswith(("Merge ", "Revert \"")):
+                      continue
+                  errs = header_errors(subject)
+                  if errs:
+                      failed = True
+                      print(f"::error title=Commit on default branch::{c.get('id', '')[:10]} '{subject}': "
+                            f"{'; '.join(errs)}. Merge PRs with squash and the PR title as the "
+                            "commit title.")
+          if failed:
+              sys.exit(1)
+          print("PR conventions OK")
+          PYEOF
