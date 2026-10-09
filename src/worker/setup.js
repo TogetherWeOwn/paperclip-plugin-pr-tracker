@@ -144,8 +144,10 @@ export function setup(ctx, options = {}) {
       if (r.ack !== undefined && r.delivered !== false) nextAcks[r.key] = r.ack;
       if (r.ledger !== undefined && r.delivered !== false) nextLedger[r.key] = r.ledger;
     }
-    const converged = out.results.every((r) => r.delivered !== false && r.outcome !== "unknown");
-    await savePollState({ etags: converged ? etags : etagsBefore, acks: nextAcks, tracking, ledger: nextLedger });
+    // Only discovered PRs are read through list ETags; explicit refs and scope diagnostics never need one.
+    const listsSettled = out.results.every((r) => refs[r.key] || r.key.startsWith("scope:")
+      || (r.delivered !== false && r.outcome !== "unknown"));
+    await savePollState({ etags: listsSettled ? etags : etagsBefore, acks: nextAcks, tracking, ledger: nextLedger });
     return out;
   }
 

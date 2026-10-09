@@ -184,6 +184,27 @@ test("a 403 on check runs halts the source like any other authorization failure"
   assert.ok(!urls.some((url) => url.includes("/pulls/10317")));
 });
 
+test("a 200 with no readable comments or check-runs body is a retryable read, never a fresh one", async () => {
+  const CHECK_SHA = "f".repeat(40);
+  const commentsGone = routeFetch([
+    ["/pulls/13113/comments", { status: 200, body: undefined }],
+    ...prRoutes(13113),
+    ...prRoutes(10317, { state: "open", merged: false, merged_at: null }),
+  ]);
+  const commentsCollect = createRestCollector({ fetchImpl: commentsGone.fetchImpl, resolveTracking: () => null });
+  const commentsReads = await commentsCollect({ scope: { upstream: [], org: [] }, token: "t", subscriptions: subsFor([PR_13113, PR_10317]) });
+  assert.deepEqual(commentsReads.map((r) => [r.key, r.status]), [[`${REPO}#13113`, 502], [`${REPO}#10317`, 200]]);
+
+  const checksGone = routeFetch([
+    [`/commits/${CHECK_SHA}/check-runs`, { status: 200, body: undefined }],
+    ...prRoutes(13113, { head: { sha: CHECK_SHA } }),
+    ...prRoutes(10317, { state: "open", merged: false, merged_at: null }),
+  ]);
+  const checksCollect = createRestCollector({ fetchImpl: checksGone.fetchImpl, resolveTracking: () => null });
+  const checksReads = await checksCollect({ scope: { upstream: [], org: [] }, token: "t", subscriptions: subsFor([PR_13113, PR_10317]) });
+  assert.deepEqual(checksReads.map((r) => [r.key, r.status]), [[`${REPO}#13113`, 502], [`${REPO}#10317`, 200]]);
+});
+
 test("a 200 with no readable body is a retryable read, never a crashing fresh read", async () => {
   const { fetchImpl } = routeFetch([
     ["/pulls/13113", { status: 200, body: undefined }],

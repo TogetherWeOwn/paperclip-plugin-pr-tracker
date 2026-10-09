@@ -116,6 +116,14 @@ function ledgerOf(entry, nextLedger) {
   return nextLedger ? { ...entry, ledger: nextLedger } : entry;
 }
 
+async function attemptDelivery(deliver, decided) {
+  try {
+    return await deliver(decided);
+  } catch (error) {
+    return { delivered: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 function hasTrackingIdentity(tracking) {
   return typeof tracking.issueId === "string" && tracking.issueId.length > 0
     && typeof tracking.identifier === "string" && tracking.identifier.length > 0;
@@ -194,6 +202,10 @@ export async function runPollTick({
         results.push({ key: read.key, outcome: "unknown", via: "invalid-tracking" });
         continue;
       }
+      if (tracking !== null && (tracking.repository !== ref.repository || tracking.number !== ref.number)) {
+        results.push({ key: read.key, outcome: "unknown", via: "tracking-mismatch" });
+        continue;
+      }
       const decided = decideIssueLifecycle({
         prevLedger,
         nextLedger: issueLedger,
@@ -203,12 +215,12 @@ export async function runPollTick({
         cardMarkers: markers,
       });
       if (decided.action === "digest") {
-        const delivery = await deliver(decided);
+        const delivery = await attemptDelivery(deliver, decided);
         if (delivery && delivery.delivered === true) {
           wakes += 1;
           results.push(ledgerOf({ key: read.key, outcome: "digest", delivered: true }, issueLedger));
         } else {
-          results.push({ key: read.key, outcome: "digest", delivered: false });
+          results.push({ key: read.key, outcome: "digest", delivered: false, ...(delivery?.error ? { error: delivery.error } : {}) });
         }
         continue;
       }
@@ -238,14 +250,14 @@ export async function runPollTick({
       });
     const persistedLedger = decided.action === "unknown" ? null : nextLedger;
     if (decided.action === "digest") {
-      const delivery = await deliver(decided);
+      const delivery = await attemptDelivery(deliver, decided);
       if (delivery && delivery.delivered === true) {
         wakes += 1;
         const entry = { key: read.key, outcome: "digest", delivered: true };
         if (decided.nextAck !== undefined) entry.ack = decided.nextAck;
         results.push(ledgerOf(entry, persistedLedger));
       } else {
-        results.push({ key: read.key, outcome: "digest", delivered: false });
+        results.push({ key: read.key, outcome: "digest", delivered: false, ...(delivery?.error ? { error: delivery.error } : {}) });
       }
       continue;
     }

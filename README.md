@@ -58,7 +58,7 @@ so nothing is forgotten.
   converges.
 - `test/collect-rest.test.mjs` — offline suite for the REST collector
   (9 tests, `node --test`). No network, no credentials.
-- `test/poll-prs.test.mjs` — offline suite for the collector (11 tests),
+- `test/poll-prs.test.mjs` — offline suite for the collector (12 tests),
   ending in a real-core integration pass: baseline first sight, digest a head
   push, deliver exactly once.
 - `test/view-model.test.mjs` — offline suite for the view-model plus manifest

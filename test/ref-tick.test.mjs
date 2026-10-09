@@ -433,6 +433,43 @@ test("an undelivered digest on a discovered PR is retried even when the list ETa
   assert.equal(host.wakes[0].opts.idempotencyKey, host.wakes[1].opts.idempotencyKey);
 });
 
+test("an unknown explicit ref does not force a full discovered-list re-read", async () => {
+  world = { pulls: { 7: { state: "open" }, 10317: { rateLimited: true } }, issues: {} };
+  const host = makeHost();
+  const mixedTick = setup(host.ctx, {
+    companyId: "company-1",
+    configPath: "plugins/pr-tracker",
+    secretRef: { type: "secret_ref", secretId: "github-org-app", version: "latest" },
+    scope: { upstream: [], org: [REPO] },
+    subscriptions: subset([10317]),
+    collect,
+  }).tick;
+
+  await mixedTick();
+  const second = await mixedTick();
+  assert.deepEqual(second.results, [{ key: KEY(10317), outcome: "unknown", via: "retry" }]);
+});
+
+test("an issue tracking row for a different number is an unknown read, never a wake", async () => {
+  world = { pulls: {}, issues: { 11199: { number: 11199, state: "open", state_reason: null, updated_at: ISO } } };
+  const host = makeHost();
+  const otherIssueTick = setup(host.ctx, {
+    companyId: "company-1",
+    configPath: "plugins/pr-tracker",
+    secretRef: { type: "secret_ref", secretId: "github-org-app", version: "latest" },
+    scope: { upstream: [], org: [] },
+    subscriptions: subset([11199]),
+    collect: createRestCollector({
+      fetchImpl,
+      resolveTracking: () => ({ repository: REPO, number: 999, issueId: "issue-999", identifier: "DEMO-999", cardOpen: true }),
+    }),
+  }).tick;
+
+  const out = await otherIssueTick();
+  assert.deepEqual(out.results, [{ key: KEY(11199), outcome: "unknown", via: "tracking-mismatch" }]);
+  assert.equal(host.wakes.length, 0);
+});
+
 test("a PR tracking row without cardOpen is an unknown read, never an aborted tick", async () => {
   world = { pulls: { 10317: { state: "open" } }, issues: {} };
   const host = makeHost();

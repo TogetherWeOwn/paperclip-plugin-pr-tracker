@@ -132,6 +132,25 @@ test('digest delivers once; failed delivery withholds the ack advance', async ()
   assert.deepEqual(withheld.results[0], { key: 'k#1', outcome: 'digest', delivered: false })
 })
 
+test('a throwing delivery withholds that digest and lets the tick finish', async () => {
+  const input = {
+    prev: null,
+    next: { repository: 'org/only', number: 1 },
+    tracking: { repository: 'org/only', number: 1, issueId: 'issue-1', identifier: 'DEMO-1', cardOpen: true },
+    nowMs: T0,
+  }
+  const out = await runPollTick({
+    pluginEnabled: true,
+    scope: scopeTargets({}),
+    collect: async () => [{ key: 'k#1', status: 200, input }],
+    decide: () => ({ action: 'digest', dedupeKey: 'fp-2', nextAck: { sig: 'n2' } }),
+    deliver: async () => { throw new Error('host unavailable') },
+  })
+  assert.equal(out.outcome, 'tick-complete')
+  assert.equal(out.wakes, 0)
+  assert.deepEqual(out.results[0], { key: 'k#1', outcome: 'digest', delivered: false, error: 'host unavailable' })
+})
+
 test('integration: real core baselines first sight, digests a head push, stays silent after', async () => {
   const tracking = {
     repository: 'org/only', number: 7, issueId: 'issue-1',

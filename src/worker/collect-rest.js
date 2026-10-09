@@ -102,7 +102,7 @@ export async function fetchAllPages(fetchImpl, url, { token, etag } = {}) {
     }
     if (res.status === 429) return { items, pages: null, etag: null, ok: false, rateLimited: true };
     if (res.status !== 200 || !Array.isArray(res.body)) {
-      return { items, pages: null, etag: null, ok: false, status: res.status };
+      return { items, pages: null, etag: null, ok: false, status: res.status === 200 ? 502 : res.status };
     }
     fetched += 1;
     items.push(...res.body);
@@ -348,10 +348,13 @@ export function createRestCollector({
       ),
     ]);
     const parts = [commentsRes, reviewRes, reviewsRes];
-    if (parts.some((p) => !p.ok) || (checksRes.status !== 200 && checksRes.status !== 404)) {
-      const rateLimited = parts.some((p) => p.rateLimited) || checksRes.status === 429;
-      const authFailure = [checksRes, ...parts].find((r) => r.status === 401 || r.status === 403);
-      return { key, status: rateLimited ? 429 : (authFailure?.status ?? parts.find((p) => p.status)?.status ?? 500) };
+    const checks = checksRes.status === 200 && !checksRes.body ? { status: 502 } : checksRes;
+    if (parts.some((p) => !p.ok) || (checks.status !== 200 && checks.status !== 404)) {
+      const rateLimited = parts.some((p) => p.rateLimited) || checks.status === 429;
+      const statuses = [...parts.map((p) => p.status), checks.status]
+        .filter((s) => s !== undefined && s !== 200 && s !== 404);
+      const status = statuses.find((s) => s === 401 || s === 403) ?? statuses[0] ?? 500;
+      return { key, status: rateLimited ? 429 : status };
     }
     const snapshot = snapshotFromRest({
       repository: repo,

@@ -18,6 +18,7 @@ export function refKey(repository, number) {
 
 function normalizeRef(raw, repository) {
   requireValue(raw && typeof raw === "object" && !Array.isArray(raw), "subscription ref must be an object");
+  requireValue(raw.repository === undefined || raw.repository === repository, "subscription ref repository must match the registry");
   requireValue(REF_KINDS.includes(raw.kind), "subscription ref kind is invalid");
   requireValue(Number.isSafeInteger(raw.number) && raw.number > 0, "subscription ref number is invalid");
   requireValue(RETIRE_POLICIES.includes(raw.retireLedgerWhen), "subscription ref retire policy is invalid");

@@ -55,6 +55,13 @@ test("refKey mirrors the state key format used by the collector", () => {
 test("malformed registries fail loudly instead of dropping refs", () => {
   const base = JSON.parse(JSON.stringify(registry));
   assert.throws(() => normalizeSubscriptions({ ...base, schemaVersion: 2 }), /schemaVersion/);
+  assert.throws(
+    () => normalizeSubscriptions({
+      ...base,
+      refs: [{ repository: "other/repo", number: 2, kind: "pull_request", role: "candidate", retireLedgerWhen: "merged_or_closed" }],
+    }),
+    /repository must match/,
+  );
   assert.throws(() => normalizeSubscriptions({ ...base, repository: "not a repo" }), /repository/);
   assert.throws(
     () => normalizeSubscriptions({ ...base, refs: [...base.refs, base.refs[0]] }),
