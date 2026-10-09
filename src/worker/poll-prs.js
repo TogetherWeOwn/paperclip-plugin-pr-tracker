@@ -26,7 +26,7 @@
 // ledger (`../decision-core/ref-ledger.js`) decides retirement from that
 // lifecycle and the ref's policy. `unknown` outcomes never touch the ledger.
 
-import { decideUpstreamWatch } from "../decision-core/upstream-watcher.js";
+import { decideUpstreamWatch, trackingFault } from "../decision-core/upstream-watcher.js";
 import { decideIssueLifecycle, decideLedger } from "../decision-core/ref-ledger.js";
 
 export const HOUR_MS = 3_600_000;
@@ -216,6 +216,11 @@ export async function runPollTick({
       continue;
     }
 
+    const fault = read.input?.tracking ? trackingFault(read.input.tracking, read.input.next) : null;
+    if (fault !== null) {
+      results.push({ key: read.key, outcome: "unknown", via: fault });
+      continue;
+    }
     const nextLedger = ref && read.lifecycle ? lifecycleLedger(read.lifecycle) : null;
     // Post-terminal noise on a retired ref stays silent; a lifecycle transition still digests once.
     const postTerminalNoise = nextLedger !== null

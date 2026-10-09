@@ -298,11 +298,12 @@ export function createRestCollector({
       const prev = prevAcks?.[key];
       const headSha = item.head?.sha;
       const updatedAt = toMs(item.updated_at);
+      // updated_at has whole-second precision: skip only PRs settled before that read's second.
       if (
         prev?.snapshot
         && prev.snapshot.headSha === headSha
         && updatedAt !== null
-        && updatedAt <= prev.snapshot.fetchedAtMs
+        && updatedAt < Math.floor(prev.snapshot.fetchedAtMs / 1000) * 1000
       ) {
         reads.push({ key, status: 304 });
         continue;
@@ -313,6 +314,7 @@ export function createRestCollector({
 
   async function collectOnePr(repo, number, kind, etags, token) {
     const key = prKey(repo, number);
+    const nowMs = Date.now();
     const urls = {
       pr: `${apiBase}/repos/${repo}/pulls/${number}`,
       comments: `${apiBase}/repos/${repo}/issues/${number}/comments?per_page=100`,
@@ -329,7 +331,7 @@ export function createRestCollector({
       const etag = prRes.headers?.get?.("etag");
       if (etag) bodies.set(urls.pr, { etag, body: prBody });
     } else {
-      return { key, status: prRes.status === 403 && prRes.rateLimited ? 429 : prRes.status };
+      return { key, status: prRes.status === 200 ? 502 : prRes.status };
     }
     const headSha = prBody.head?.sha;
     // Array endpoints paginate; the check-runs and search endpoints answer
@@ -348,9 +350,9 @@ export function createRestCollector({
     const parts = [commentsRes, reviewRes, reviewsRes];
     if (parts.some((p) => !p.ok) || (checksRes.status !== 200 && checksRes.status !== 404)) {
       const rateLimited = parts.some((p) => p.rateLimited) || checksRes.status === 429;
-      return { key, status: rateLimited ? 429 : (parts.find((p) => p.status)?.status ?? 500) };
+      const authFailure = [checksRes, ...parts].find((r) => r.status === 401 || r.status === 403);
+      return { key, status: rateLimited ? 429 : (authFailure?.status ?? parts.find((p) => p.status)?.status ?? 500) };
     }
-    const nowMs = Date.now();
     const snapshot = snapshotFromRest({
       repository: repo,
       pr: prBody,

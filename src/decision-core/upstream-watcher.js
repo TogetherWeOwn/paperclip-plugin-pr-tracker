@@ -139,6 +139,22 @@ function validateTracking(tracking) {
 }
 
 /**
+ * Why a tracking entry cannot be decided against this snapshot, or null. Lets the
+ * caller report one bad row as unknown instead of aborting the whole tick.
+ */
+export function trackingFault(tracking, snapshot) {
+  if (tracking === null || tracking === undefined) return null
+  try {
+    validateTracking(tracking)
+  } catch {
+    return 'invalid-tracking'
+  }
+  return tracking.repository === snapshot.repository && tracking.number === snapshot.number
+    ? null
+    : 'tracking-mismatch'
+}
+
+/**
  * Validate one compact collector read and freeze its normalized form. Throws
  * on malformed shape; transport problems travel as readOk:false (or partial /
  * rateLimited / short pages), which decide() maps to `unknown`, not silence.

@@ -67,7 +67,7 @@ function fakeCtx(over = {}) {
         wakes,
         async requestWakeup(issueId, companyId, opts) {
           wakes.push({ issueId, companyId, opts });
-          return over.wakeupResult ?? { ok: true };
+          return over.wakeupResult ?? { queued: true, runId: null };
         },
       },
       secrets: {
@@ -164,7 +164,7 @@ test("304 stays silent and performs no wake", async () => {
 });
 
 test("failed delivery withholds the ack advance", async () => {
-  const { ctx, wakes, store } = fakeCtx({ wakeupResult: false });
+  const { ctx, wakes, store } = fakeCtx({ wakeupResult: { queued: false, runId: null } });
   let head = HEAD_A;
   const api = setup(ctx, { ...OPTS, collect: () => collectWith(head)() });
   await api.tick();

@@ -46,6 +46,9 @@ function prJson(number, spec) {
 
 function routes() {
   const out = [];
+  const openPulls = Object.entries(world.pulls).filter(([, spec]) => !spec.rateLimited && !spec.unauthorized && (spec.state ?? "open") === "open");
+  const listBody = openPulls.map(([n, spec]) => ({ number: Number(n), head: { sha: spec.head ?? SHA_A }, updated_at: ISO }));
+  out.push([`/repos/${REPO}/pulls?state=open`, { body: listBody, headers: { etag: `"${JSON.stringify(listBody)}"` } }]);
   for (const [n, spec] of Object.entries(world.pulls)) {
     const number = Number(n);
     if (spec.rateLimited) {
@@ -85,6 +88,7 @@ const TRACKS = {
   [KEY(13113)]: { repository: REPO, number: 13113, issueId: "issue-13113", identifier: "DEMO-13113", cardOpen: true },
   [KEY(13663)]: { repository: REPO, number: 13663, issueId: "issue-13663", identifier: "DEMO-13663", cardOpen: true },
   [KEY(11199)]: { repository: REPO, number: 11199, issueId: "issue-11199", identifier: "DEMO-11199", cardOpen: true },
+  [KEY(7)]: { repository: REPO, number: 7, issueId: "issue-7", identifier: "DEMO-7", cardOpen: true },
 };
 
 const collect = createRestCollector({
@@ -110,9 +114,9 @@ function makeHost({ failures = 0 } = {}) {
           wakes.push({ issueId, opts });
           if (remaining > 0) {
             remaining -= 1;
-            return false;
+            return { queued: false, runId: null };
           }
-          return { ok: true };
+          return { queued: true, runId: null };
         },
       },
       secrets: { async resolve() { return "test-token"; } },
@@ -404,4 +408,51 @@ test("an issue tracking row without an identity is an unknown read, never a wake
   assert.deepEqual(out.results, [{ key: KEY(11199), outcome: "unknown", via: "invalid-tracking" }]);
   assert.equal(host.wakes.length, 0);
   assert.equal(host.store.state.ledger[KEY(11199)], undefined);
+});
+
+test("an undelivered digest on a discovered PR is retried even when the list ETag is unchanged", async () => {
+  world = { pulls: { 7: { state: "open" } }, issues: {} };
+  const host = makeHost({ failures: 1 });
+  const orgTick = setup(host.ctx, {
+    companyId: "company-1",
+    configPath: "plugins/pr-tracker",
+    secretRef: { type: "secret_ref", secretId: "github-org-app", version: "latest" },
+    scope: { upstream: [], org: [REPO] },
+    collect,
+  }).tick;
+
+  await orgTick();
+  world.pulls[7] = { state: "open", head: SHA_B };
+  const failed = await orgTick();
+  assert.equal(failed.results[0].delivered, false);
+
+  const retried = await orgTick();
+  assert.equal(retried.results.length, 1);
+  assert.equal(retried.results[0].delivered, true);
+  assert.equal(host.wakes.length, 2);
+  assert.equal(host.wakes[0].opts.idempotencyKey, host.wakes[1].opts.idempotencyKey);
+});
+
+test("a PR tracking row without cardOpen is an unknown read, never an aborted tick", async () => {
+  world = { pulls: { 10317: { state: "open" } }, issues: {} };
+  const host = makeHost();
+  const brokenTick = setup(host.ctx, {
+    companyId: "company-1",
+    configPath: "plugins/pr-tracker",
+    secretRef: { type: "secret_ref", secretId: "github-org-app", version: "latest" },
+    scope: { upstream: [], org: [] },
+    subscriptions: subset([10317]),
+    collect: createRestCollector({
+      fetchImpl,
+      resolveTracking: () => ({ repository: REPO, number: 10317, issueId: "issue-10317", identifier: "DEMO-10317" }),
+    }),
+  }).tick;
+
+  const first = await brokenTick();
+  assert.deepEqual(first.results, [{ key: KEY(10317), outcome: "unknown", via: "invalid-tracking" }]);
+  world.pulls[10317] = { state: "closed", merged: true, merged_at: ISO };
+  const second = await brokenTick();
+  assert.deepEqual(second.results, [{ key: KEY(10317), outcome: "unknown", via: "invalid-tracking" }]);
+  assert.equal(host.wakes.length, 0);
+  assert.equal(host.store.state.ledger[KEY(10317)], undefined);
 });

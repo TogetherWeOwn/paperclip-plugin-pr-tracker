@@ -170,3 +170,26 @@ test("a rate-limited explicit read is retained as 429 and does not halt the othe
   });
   assert.deepEqual(reads.map((r) => [r.key, r.status]), [[`${REPO}#13113`, 429], [`${REPO}#10317`, 200]]);
 });
+
+test("a 403 on check runs halts the source like any other authorization failure", async () => {
+  const CHECK_SHA = "e".repeat(40);
+  const { fetchImpl, urls } = routeFetch([
+    [`/commits/${CHECK_SHA}/check-runs`, { status: 403, body: {} }],
+    ...prRoutes(13113, { head: { sha: CHECK_SHA } }),
+    ...prRoutes(10317, { state: "open", merged: false, merged_at: null }),
+  ]);
+  const collect = createRestCollector({ fetchImpl, resolveTracking: () => null });
+  const reads = await collect({ scope: { upstream: [], org: [] }, token: "t", subscriptions: subsFor([PR_13113, PR_10317]) });
+  assert.deepEqual(reads.map((r) => [r.key, r.status]), [[`${REPO}#13113`, 403]]);
+  assert.ok(!urls.some((url) => url.includes("/pulls/10317")));
+});
+
+test("a 200 with no readable body is a retryable read, never a crashing fresh read", async () => {
+  const { fetchImpl } = routeFetch([
+    ["/pulls/13113", { status: 200, body: undefined }],
+    ...prRoutes(10317, { state: "open", merged: false, merged_at: null }),
+  ]);
+  const collect = createRestCollector({ fetchImpl, resolveTracking: () => null });
+  const reads = await collect({ scope: { upstream: [], org: [] }, token: "t", subscriptions: subsFor([PR_13113, PR_10317]) });
+  assert.deepEqual(reads.map((r) => [r.key, r.status]), [[`${REPO}#13113`, 502], [`${REPO}#10317`, 200]]);
+});

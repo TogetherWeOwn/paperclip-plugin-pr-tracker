@@ -57,7 +57,7 @@ so nothing is forgotten.
   durable delivery; failed delivery withholds the advance so the retry
   converges.
 - `test/collect-rest.test.mjs` — offline suite for the REST collector
-  (8 tests, `node --test`). No network, no credentials.
+  (9 tests, `node --test`). No network, no credentials.
 - `test/poll-prs.test.mjs` — offline suite for the collector (11 tests),
   ending in a real-core integration pass: baseline first sight, digest a head
   push, deliver exactly once.

@@ -105,7 +105,12 @@ test('non-fresh, non-304 reads resolve unknown and never silent', async () => {
 
 test('digest delivers once; failed delivery withholds the ack advance', async () => {
   const fakeDigest = { action: 'digest', dedupeKey: 'fp-1', nextAck: { sig: 'n1' } }
-  const input = { prev: null, next: {}, tracking: {}, nowMs: T0 }
+  const input = {
+    prev: null,
+    next: { repository: 'org/only', number: 1 },
+    tracking: { repository: 'org/only', number: 1, issueId: 'issue-1', identifier: 'DEMO-1', cardOpen: true },
+    nowMs: T0,
+  }
   const delivered = await runPollTick({
     pluginEnabled: true,
     scope: scopeTargets({}),

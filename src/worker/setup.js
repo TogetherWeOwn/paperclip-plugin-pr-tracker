@@ -17,7 +17,8 @@
 //
 // REST collection (`collect`) is caller-provided and must honor the core
 // contract: failed/partial reads resolve to `unknown`, never `silent`.
-// Ack and ETag persistence happens ONLY after durable delivery.
+// Ack persistence happens ONLY after durable delivery. List ETags persist only
+// when every read converged, so an undelivered or unknown PR is re-read next tick.
 
 import {
   decideUpstreamWatch,
@@ -99,7 +100,7 @@ export function setup(ctx, options = {}) {
       contextSource: proposal.sourceId,
       idempotencyKey: marker,
     });
-    return { delivered: res !== false };
+    return { delivered: res?.queued === true };
   }
 
   async function tick() {
@@ -107,6 +108,7 @@ export function setup(ctx, options = {}) {
       return { outcome: "stopped-disabled", reads: 0, wakes: 0, results: [] };
     }
     const { etags, acks, tracking, ledger } = await loadPollState();
+    const etagsBefore = { ...etags };
     const wrappedCollect = async (args) => {
       // F2: the collector mutates this same `etags` object with list-URL
       // ETags, so it (not a pre-tick copy) is what gets persisted below.
@@ -142,7 +144,8 @@ export function setup(ctx, options = {}) {
       if (r.ack !== undefined && r.delivered !== false) nextAcks[r.key] = r.ack;
       if (r.ledger !== undefined && r.delivered !== false) nextLedger[r.key] = r.ledger;
     }
-    await savePollState({ etags, acks: nextAcks, tracking, ledger: nextLedger });
+    const converged = out.results.every((r) => r.delivered !== false && r.outcome !== "unknown");
+    await savePollState({ etags: converged ? etags : etagsBefore, acks: nextAcks, tracking, ledger: nextLedger });
     return out;
   }
 
