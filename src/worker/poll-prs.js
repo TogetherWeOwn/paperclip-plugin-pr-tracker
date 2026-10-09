@@ -21,8 +21,13 @@
 // `upstream-pr-compliance` signal plus owner-report line. The decision core
 // only reports single-tick outcomes; the ladder state lives in `plugin.state`
 // (ack signatures + SLA latches), never in the core.
+//
+// TYPED REFS. A read for an explicit subscription carries its lifecycle; the
+// ledger (`../decision-core/ref-ledger.js`) decides retirement from that
+// lifecycle and the ref's policy. `unknown` outcomes never touch the ledger.
 
 import { decideUpstreamWatch } from "../decision-core/upstream-watcher.js";
+import { decideIssueLifecycle, decideLedger } from "../decision-core/ref-ledger.js";
 
 export const HOUR_MS = 3_600_000;
 export const DAY_MS = 24 * HOUR_MS;
@@ -107,28 +112,40 @@ export function workerPolicy() {
   };
 }
 
+function ledgerOf(entry, nextLedger) {
+  return nextLedger ? { ...entry, ledger: nextLedger } : entry;
+}
+
 /**
  * Run one `pollPrs` tick.
  *
  * @param {object} args
  * @param {boolean} args.pluginEnabled - live enabled flag; false stops everything.
  * @param {object} args.scope - result of `scopeTargets()`.
+ * @param {object|null} [args.subscriptions] - normalized typed refs, passed to `collect`.
  * @param {Map|object} [args.etags] - stored per-resource ETags (conditional reads).
  * @param {object} [args.acks] - persisted per-PR ack signatures + SLA latches.
+ * @param {object} [args.ledgers] - persisted per-typed-ref ledger records.
+ * @param {object} [args.refs] - normalized subscription refs keyed by `repo#number`.
  * @param {object} [args.cardMarkers] - tracking-task writer markers per PR, for ack-loss convergence.
- * @param {Function} args.collect - `async ({scope, etags}) => [{key, status, input?, etag?}]`,
+ * @param {number} [args.nowMs] - collector clock for ledger history.
+ * @param {Function} args.collect - `async ({scope, etags, subscriptions}) => [{key, status, input?, lifecycle?, tracking?, etag?}]`,
  *   where each fresh read's `input` is the collector-built decision-core input
  *   `{ prev, next, tracking, nowMs }` (policy and cardMarkers are injected here).
  * @param {Function} [args.deliver] - `async (decision) => {delivered: boolean}`;
- *   the caller persists `nextAck` only when delivery is durable.
+ *   the caller persists `nextAck` and `ledger` only when delivery is durable.
  * @param {Function} [args.decide] - defaults to `decideUpstreamWatch`; injectable for tests.
  */
 export async function runPollTick({
   pluginEnabled,
   scope,
+  subscriptions = null,
   etags = {},
   acks = {},
+  ledgers = {},
+  refs = {},
   cardMarkers = {},
+  nowMs = Date.now(),
   collect,
   deliver = async () => ({ delivered: true }),
   decide = decideUpstreamWatch,
@@ -140,7 +157,7 @@ export async function runPollTick({
     throw new Error("runPollTick: collect() is required");
   }
   const policy = workerPolicy();
-  const reads = await collect({ scope, etags });
+  const reads = await collect({ scope, etags, subscriptions });
   const results = [];
   let wakes = 0;
   for (const read of reads) {
@@ -153,18 +170,61 @@ export async function runPollTick({
       results.push({ key: read.key, outcome: "unknown", via: classification });
       continue;
     }
+    const ref = refs[read.key] ?? null;
+    const prevLedger = ledgers[read.key] ?? null;
     const markers = cardMarkers[read.key] ?? [];
-    const decided = decide({
-      ...read.input,
-      prev: acks[read.key] ?? read.input.prev ?? null,
-      policy,
-      cardMarkers: markers,
+    const lifecycleLedger = (lifecycle) => decideLedger({
+      policy: ref.retireLedgerWhen,
+      equivalence: ref.equivalence,
+      prev: prevLedger,
+      lifecycle,
+      atMs: nowMs,
     });
+
+    if (read.lifecycle?.kind === "issue") {
+      if (!ref) throw new Error(`runPollTick: issue read ${read.key} has no subscription ref`);
+      const nextLedger = lifecycleLedger(read.lifecycle);
+      const decided = decideIssueLifecycle({
+        prevLedger,
+        nextLedger,
+        tracking: read.tracking ?? null,
+        repository: ref.repository,
+        number: ref.number,
+        cardMarkers: markers,
+      });
+      if (decided.action === "digest") {
+        const delivery = await deliver(decided);
+        if (delivery && delivery.delivered === true) {
+          wakes += 1;
+          results.push(ledgerOf({ key: read.key, outcome: "digest", delivered: true }, nextLedger));
+        } else {
+          results.push({ key: read.key, outcome: "digest", delivered: false });
+        }
+        continue;
+      }
+      results.push(ledgerOf({ key: read.key, outcome: decided.action }, nextLedger));
+      continue;
+    }
+
+    const retiredTerminal = ref !== null && prevLedger?.state === "retired" && read.lifecycle?.terminal !== "open";
+    const decided = retiredTerminal
+      ? { action: "silent" }
+      : decide({
+        ...read.input,
+        prev: acks[read.key] ?? read.input.prev ?? null,
+        policy,
+        cardMarkers: markers,
+      });
+    const nextLedger = ref && read.lifecycle && decided.action !== "unknown"
+      ? lifecycleLedger(read.lifecycle)
+      : null;
     if (decided.action === "digest") {
       const delivery = await deliver(decided);
       if (delivery && delivery.delivered === true) {
         wakes += 1;
-        results.push({ key: read.key, outcome: "digest", delivered: true, ack: decided.nextAck });
+        const entry = { key: read.key, outcome: "digest", delivered: true };
+        if (decided.nextAck !== undefined) entry.ack = decided.nextAck;
+        results.push(ledgerOf(entry, nextLedger));
       } else {
         results.push({ key: read.key, outcome: "digest", delivered: false });
       }
@@ -175,7 +235,7 @@ export async function runPollTick({
     const entry = { key: read.key, outcome: decided.action };
     if (decided.nextAck !== undefined) entry.ack = decided.nextAck;
     if (decided.detail !== undefined) entry.detail = decided.detail;
-    results.push(entry);
+    results.push(ledgerOf(entry, nextLedger));
   }
   return { outcome: "tick-complete", reads: reads.length, wakes, results };
 }

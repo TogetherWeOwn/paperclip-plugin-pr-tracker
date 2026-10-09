@@ -32,6 +32,18 @@ so nothing is forgotten.
   with head-SHA skip, per-PR detail mapping (CI rollup, mergeable, review
   verdict, threads/comments as hashes, response times) to core snapshots.
   Rate-limited 403s normalize to 429; malformed reads map to `unknown`.
+- `src/worker/ref-subscriptions.js` — typed upstream-ref contract: explicit
+  `(repository, kind, number)` refs with a retire policy and optional
+  equivalence evidence. Duplicates, excluded numbers and malformed input are
+  refused; discovery drops refs the registry already covers or excludes.
+- `src/decision-core/ref-ledger.js` — pure typed-ref lifecycle. Only an
+  explicit `merged === true` proves a merge. `merged_or_closed` retires on a
+  terminal state; `equivalent_fix_verified` retires only on recorded
+  equivalence evidence, never on closure. Issue digests reuse the writer marker.
+- `test/ref-subscriptions.test.mjs`, `test/ref-ledger.test.mjs`,
+  `test/collect-subscriptions.test.mjs`, `test/ref-tick.test.mjs` — offline
+  suites over `test/fixtures/`: all ten refs covered, exclusions held, PR and
+  issue routing, unknown reads never retire, delivery-gated ledger, auth halt.
 - `scripts/pack.sh` — mirrors dependency-free ESM into `dist/` with the two
   manifest entrypoints (`npm run build` wiring rides the export).
 - `src/worker/poll-prs.js` — `pollPrs` collector. Pure and dependency-free:

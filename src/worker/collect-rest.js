@@ -20,6 +20,8 @@
 
 import { createHash } from "node:crypto";
 import { normalizeSnapshot } from "../decision-core/upstream-watcher.js";
+import { issueLifecycle, pullLifecycle } from "../decision-core/ref-ledger.js";
+import { discoveryFilter } from "./ref-subscriptions.js";
 
 export const API_BASE = "https://api.github.com";
 export const USER_AGENT = "paperclip-pr-tracker/0.4.0";
@@ -113,6 +115,10 @@ export async function fetchAllPages(fetchImpl, url, { token, etag } = {}) {
     etag: lastEtag,
     ok: true,
   };
+}
+
+function authStopped(reads) {
+  return reads.some((read) => read.status === 401 || read.status === 403);
 }
 
 const RED_CONCLUSIONS = new Set(["failure", "timed_out", "action_required", "stale"]);
@@ -239,6 +245,17 @@ export function snapshotFromRest({
   };
 }
 
+export function pullLifecycleFromRest(pr = {}) {
+  return pullLifecycle({ state: pr.state === "closed" ? "closed" : "open", merged: pr.merged === true });
+}
+
+export function issueLifecycleFromRest(issue = {}) {
+  return issueLifecycle({
+    state: issue.state === "closed" ? "closed" : "open",
+    stateReason: issue.state_reason ?? null,
+  });
+}
+
 function prKey(repository, number) {
   return `${repository}#${number}`;
 }
@@ -265,7 +282,7 @@ export function createRestCollector({
     return fetchJson(fetchImpl, url, { token, etag });
   }
 
-  async function collectOrgRepo(repo, etags, token, prevAcks, reads) {
+  async function collectOrgRepo(repo, etags, token, prevAcks, reads, keep) {
     const listUrl = `${apiBase}/repos/${repo}/pulls?state=open&per_page=100`;
     const list = await fetchAllPages(fetchImpl, listUrl, { token, etag: etags[listUrl] });
     if (list.notModified) return;
@@ -275,6 +292,8 @@ export function createRestCollector({
     }
     if (list.etag) etags[listUrl] = list.etag;
     for (const item of list.items ?? []) {
+      if (authStopped(reads)) return;
+      if (!keep(repo, item.number)) continue;
       const key = prKey(repo, item.number);
       const prev = prevAcks?.[key];
       const headSha = item.head?.sha;
@@ -351,6 +370,7 @@ export function createRestCollector({
     return {
       key,
       status: 200,
+      lifecycle: pullLifecycleFromRest(prBody),
       input: {
         prev: null,
         next: snapshot,
@@ -369,7 +389,7 @@ export function createRestCollector({
     };
   }
 
-  async function collectUpstreamRepo(repo, etags, token, prevAcks, reads) {
+  async function collectUpstreamRepo(repo, etags, token, prevAcks, reads, keep) {
     if (!upstreamAuthor) {
       reads.push({ key: `scope:${repo}`, status: 0 });
       return;
@@ -390,17 +410,50 @@ export function createRestCollector({
     const etag = res.headers?.get?.("etag");
     if (etag) etags[url] = etag;
     for (const item of res.body.items) {
+      if (authStopped(reads)) return;
+      if (!keep(repo, item.number)) continue;
       reads.push(await collectOnePr(repo, item.number, "upstream", etags, token, prevAcks));
     }
   }
 
-  return async function collect({ scope, etags = {}, token, prevAcks = {} } = {}) {
+  async function collectSubscribedIssue(ref, etags, token) {
+    const url = `${apiBase}/repos/${ref.repository}/issues/${ref.number}`;
+    const res = await get(url, etags[url], token);
+    if (res.status === 304) return { key: ref.key, status: 304 };
+    if (res.status !== 200) return { key: ref.key, status: res.status };
+    if (res.body?.pull_request) return { key: ref.key, status: 409 };
+    const etag = res.headers?.get?.("etag");
+    if (etag) etags[url] = etag;
+    let lifecycle;
+    try {
+      lifecycle = issueLifecycleFromRest(res.body);
+    } catch {
+      return { key: ref.key, status: 422 };
+    }
+    return {
+      key: ref.key,
+      status: 200,
+      lifecycle,
+      tracking: resolveTracking(ref.repository, ref.number, res.body),
+    };
+  }
+
+  return async function collect({ scope, etags = {}, token, prevAcks = {}, subscriptions = null } = {}) {
     const reads = [];
+    const keep = discoveryFilter(subscriptions);
     for (const repo of scope?.org ?? []) {
-      await collectOrgRepo(repo, etags, token, prevAcks, reads);
+      if (authStopped(reads)) return reads;
+      await collectOrgRepo(repo, etags, token, prevAcks, reads, keep);
     }
     for (const repo of scope?.upstream ?? []) {
-      await collectUpstreamRepo(repo, etags, token, prevAcks, reads);
+      if (authStopped(reads)) return reads;
+      await collectUpstreamRepo(repo, etags, token, prevAcks, reads, keep);
+    }
+    for (const ref of subscriptions?.refs ?? []) {
+      if (authStopped(reads)) return reads;
+      reads.push(ref.kind === "issue"
+        ? await collectSubscribedIssue(ref, etags, token)
+        : await collectOnePr(ref.repository, ref.number, "upstream", etags, token));
     }
     return reads;
   };

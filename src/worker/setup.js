@@ -25,6 +25,7 @@ import {
   writerMarkerForDigest,
 } from "../decision-core/upstream-watcher.js";
 import { runPollTick, shouldRunTick } from "./poll-prs.js";
+import { normalizeSubscriptions } from "./ref-subscriptions.js";
 import {
   applyFilters,
   defaultFilter,
@@ -53,6 +54,7 @@ export function setup(ctx, options = {}) {
     configPath,
     secretRef,
     scope,
+    subscriptions: rawSubscriptions = null,
     collect,
     enabledProbe = async () => true,
     namespace = STATE_NAMESPACE,
@@ -61,6 +63,8 @@ export function setup(ctx, options = {}) {
   if (!companyId) throw new Error("setup: companyId is required");
   if (!secretRef) throw new Error("setup: secretRef is required");
   if (typeof collect !== "function") throw new Error("setup: collect() is required");
+  const subscriptions = rawSubscriptions ? normalizeSubscriptions(rawSubscriptions) : null;
+  const refs = Object.fromEntries((subscriptions?.refs ?? []).map((ref) => [ref.key, ref]));
 
   const stateAddr = {
     scopeKind: "plugin",
@@ -72,12 +76,13 @@ export function setup(ctx, options = {}) {
   async function loadPollState() {
     const stored = await ctx.state.get(stateAddr);
     if (!stored || typeof stored !== "object") {
-      return { etags: {}, acks: {}, tracking: {} };
+      return { etags: {}, acks: {}, tracking: {}, ledger: {} };
     }
     return {
       etags: stored.etags ?? {},
       acks: stored.acks ?? {},
       tracking: stored.tracking ?? {},
+      ledger: stored.ledger ?? {},
     };
   }
 
@@ -101,7 +106,7 @@ export function setup(ctx, options = {}) {
     if (!(await enabledProbe())) {
       return { outcome: "stopped-disabled", reads: 0, wakes: 0, results: [] };
     }
-    const { etags, acks, tracking } = await loadPollState();
+    const { etags, acks, tracking, ledger } = await loadPollState();
     const wrappedCollect = async (args) => {
       // F2: the collector mutates this same `etags` object with list-URL
       // ETags, so it (not a pre-tick copy) is what gets persisted below.
@@ -110,9 +115,8 @@ export function setup(ctx, options = {}) {
         if (read.etag !== undefined) etags[read.key] = read.etag;
         // F1: untracked PRs carry tracking:null — never persist the null,
         // or getData throws reading the entry.
-        if (read.input?.tracking !== undefined && read.input.tracking !== null) {
-          tracking[read.key] = read.input.tracking;
-        }
+        const entry = read.input?.tracking ?? read.tracking ?? null;
+        if (entry !== null) tracking[read.key] = entry;
       }
       return reads;
     };
@@ -122,17 +126,22 @@ export function setup(ctx, options = {}) {
     const out = await runPollTick({
       pluginEnabled: shouldRunTick({ pluginEnabled: true }),
       scope,
+      subscriptions,
       etags,
       acks,
+      ledgers: ledger,
+      refs,
       collect: wrappedCollect,
       deliver,
       decide: decideUpstreamWatch,
     });
     const nextAcks = { ...acks };
+    const nextLedger = { ...ledger };
     for (const r of out.results) {
       if (r.ack !== undefined && r.delivered !== false) nextAcks[r.key] = r.ack;
+      if (r.ledger !== undefined && r.delivered !== false) nextLedger[r.key] = r.ledger;
     }
-    await savePollState({ etags, acks: nextAcks, tracking });
+    await savePollState({ etags, acks: nextAcks, tracking, ledger: nextLedger });
     return out;
   }
 
