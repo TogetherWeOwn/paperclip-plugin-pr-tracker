@@ -63,14 +63,17 @@ function routes() {
     }
   }
   for (const [n, body] of Object.entries(world.issues)) {
-    out.push([`/repos/${REPO}/issues/${n}`, { body }]);
+    out.push([`/repos/${REPO}/issues/${n}`, { body, headers: { etag: `"${JSON.stringify(body)}"` } }]);
   }
   return out;
 }
 
-const fetchImpl = async (url) => {
+const fetchImpl = async (url, { headers: sent = {} } = {}) => {
   for (const [match, res] of routes()) {
     if (url.includes(match)) {
+      if (res.headers?.etag && sent["If-None-Match"] === res.headers.etag) {
+        return { status: 304, headers: headers({}), json: async () => { throw new Error("no body on 304"); } };
+      }
       return { status: res.status ?? 200, headers: headers(res.headers ?? {}), json: async () => res.body };
     }
   }
@@ -121,13 +124,17 @@ function makeHost({ failures = 0 } = {}) {
   };
 }
 
-function api(host, numbers) {
+function api(host, numbers, equivalenceByNumber = {}) {
+  const base = subset(numbers);
+  const refs = base.refs.map((ref) => (equivalenceByNumber[ref.number]
+    ? { ...ref, equivalence: equivalenceByNumber[ref.number] }
+    : ref));
   return setup(host.ctx, {
     companyId: "company-1",
     configPath: "plugins/pr-tracker",
     secretRef: { type: "secret_ref", secretId: "github-org-app", version: "latest" },
     scope: { upstream: [], org: [] },
-    subscriptions: subset(numbers),
+    subscriptions: { ...base, refs },
     collect,
   });
 }
@@ -156,9 +163,15 @@ test("issue closure wakes once, stays silent while unchanged, and wakes again on
   assert.equal(reopened.results[0].outcome, "digest");
   assert.equal(host.wakes.length, 2);
 
+  world.issues[11199] = { number: 11199, state: "closed", state_reason: "completed", updated_at: ISO };
+  const reclosed = await tick();
+  assert.equal(reclosed.results[0].outcome, "digest");
+  assert.equal(host.wakes.length, 3);
+  assert.notEqual(host.wakes[2].opts.idempotencyKey, host.wakes[0].opts.idempotencyKey, "a re-closure is a new transition");
+
   const ledger = host.store.state.ledger[KEY(11199)];
   assert.equal(ledger.state, "active", "closure never retires an equivalence-policy ref");
-  assert.equal(ledger.history.length, 3);
+  assert.equal(ledger.history.length, 4);
 });
 
 test("a merged PR retires its ref once; later changes on the retired ref stay silent", async () => {
@@ -180,7 +193,7 @@ test("a merged PR retires its ref once; later changes on the retired ref stay si
   assert.equal(host.wakes.length, 1);
 });
 
-test("failed delivery withholds the ledger and ack; the retry deduplicates to one durable wake", async () => {
+test("failed delivery withholds the ledger and ack; the retry reuses the idempotency key", async () => {
   world = { pulls: { 10317: { state: "open" } }, issues: {} };
   const host = makeHost({ failures: 1 });
   const tick = api(host, [10317]).tick;
@@ -273,4 +286,38 @@ test("an authorization failure stops the tick before any other ref is read", asy
   assert.equal(host.wakes.length, 0);
   assert.equal(host.store.state.ledger[KEY(13113)], undefined);
   assert.equal(host.store.state.acks[KEY(10317)], undefined);
+});
+
+test("a failed issue closure is retried, never masked by an unchanged ETag", async () => {
+  world = { pulls: {}, issues: { 11199: { number: 11199, state: "open", state_reason: null, updated_at: ISO } } };
+  const host = makeHost({ failures: 1 });
+  const tick = api(host, [11199]).tick;
+
+  await tick();
+  world.issues[11199] = { number: 11199, state: "closed", state_reason: "completed", updated_at: ISO };
+  const failed = await tick();
+  assert.equal(failed.results[0].delivered, false);
+
+  const retried = await tick();
+  assert.equal(retried.results[0].outcome, "digest");
+  assert.equal(host.wakes.length, 2);
+  assert.equal(host.wakes[0].opts.idempotencyKey, host.wakes[1].opts.idempotencyKey);
+  assert.equal(host.store.state.ledger[KEY(11199)].lifecycle.terminal, "closed");
+});
+
+test("equivalence evidence retires an issue at first sight; its closure stays silent", async () => {
+  world = { pulls: {}, issues: { 11199: { number: 11199, state: "open", state_reason: null, updated_at: ISO } } };
+  const host = makeHost();
+  const tick = api(host, [11199], { 11199: { kind: "rebase", sha: "c".repeat(40) } }).tick;
+
+  const first = await tick();
+  assert.equal(first.results[0].outcome, "baseline");
+  world.issues[11199] = { number: 11199, state: "closed", state_reason: "completed", updated_at: ISO };
+  const closed = await tick();
+  assert.equal(closed.results[0].outcome, "silent");
+  assert.equal(host.wakes.length, 0);
+  const ledger = host.store.state.ledger[KEY(11199)];
+  assert.equal(ledger.state, "retired");
+  assert.equal(ledger.retiredBy, "equivalence");
+  assert.equal(ledger.lifecycle.terminal, "closed");
 });

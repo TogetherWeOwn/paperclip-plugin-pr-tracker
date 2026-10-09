@@ -115,8 +115,9 @@ export function setup(ctx, options = {}) {
         if (read.etag !== undefined) etags[read.key] = read.etag;
         // F1: untracked PRs carry tracking:null — never persist the null,
         // or getData throws reading the entry.
-        const entry = read.input?.tracking ?? read.tracking ?? null;
-        if (entry !== null) tracking[read.key] = entry;
+        if (read.input?.tracking !== undefined && read.input.tracking !== null) {
+          tracking[read.key] = read.input.tracking;
+        }
       }
       return reads;
     };

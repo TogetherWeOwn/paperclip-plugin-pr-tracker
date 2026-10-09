@@ -93,8 +93,10 @@ export function decideIssueLifecycle({ prevLedger, nextLedger, tracking, reposit
   const from = prevLedger.lifecycle.terminal;
   const to = nextLedger.lifecycle.terminal;
   if (from === to) return Object.freeze({ action: "silent", repository, number, nextLedger });
+  // The transition count separates a re-closure from an earlier closure with the
+  // same reason; retries of one transition reuse the same count.
   const signature = createHash("sha256")
-    .update(`${repository}#${number}|${to}|${nextLedger.lifecycle.stateReason ?? ""}`)
+    .update(`${repository}#${number}|${to}|${nextLedger.lifecycle.stateReason ?? ""}|${nextLedger.history.length}`)
     .digest("hex");
   const digest = Object.freeze({
     action: "digest",

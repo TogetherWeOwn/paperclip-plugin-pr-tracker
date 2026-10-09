@@ -416,14 +416,13 @@ export function createRestCollector({
     }
   }
 
-  async function collectSubscribedIssue(ref, etags, token) {
+  // No ETag for issue reads: a 304 carries no body, and a persisted ETag would
+  // suppress the retry of an undelivered transition.
+  async function collectSubscribedIssue(ref, token) {
     const url = `${apiBase}/repos/${ref.repository}/issues/${ref.number}`;
-    const res = await get(url, etags[url], token);
-    if (res.status === 304) return { key: ref.key, status: 304 };
+    const res = await get(url, undefined, token);
     if (res.status !== 200) return { key: ref.key, status: res.status };
     if (res.body?.pull_request) return { key: ref.key, status: 409 };
-    const etag = res.headers?.get?.("etag");
-    if (etag) etags[url] = etag;
     let lifecycle;
     try {
       lifecycle = issueLifecycleFromRest(res.body);
@@ -452,7 +451,7 @@ export function createRestCollector({
     for (const ref of subscriptions?.refs ?? []) {
       if (authStopped(reads)) return reads;
       reads.push(ref.kind === "issue"
-        ? await collectSubscribedIssue(ref, etags, token)
+        ? await collectSubscribedIssue(ref, token)
         : await collectOnePr(ref.repository, ref.number, "upstream", etags, token));
     }
     return reads;

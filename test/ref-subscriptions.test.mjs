@@ -44,6 +44,8 @@ test("the eleven exclusions stay excluded from both explicit and discovered inta
   }
   assert.equal(keep("paperclipai/paperclip", 99999), true);
   assert.equal(keep("other/repo", 13113), true);
+  assert.equal(keep("PaperclipAI/Paperclip", 13113), false, "a case variant of an explicit ref is not rediscovered");
+  assert.equal(keep("PaperclipAI/Paperclip", 9743), false, "a case variant of an exclusion stays excluded");
 });
 
 test("refKey mirrors the state key format used by the collector", () => {

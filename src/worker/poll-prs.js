@@ -183,31 +183,35 @@ export async function runPollTick({
 
     if (read.lifecycle?.kind === "issue") {
       if (!ref) throw new Error(`runPollTick: issue read ${read.key} has no subscription ref`);
-      const nextLedger = lifecycleLedger(read.lifecycle);
-      const decided = decideIssueLifecycle({
-        prevLedger,
-        nextLedger,
-        tracking: read.tracking ?? null,
-        repository: ref.repository,
-        number: ref.number,
-        cardMarkers: markers,
-      });
+      const issueLedger = lifecycleLedger(read.lifecycle);
+      const retiredSilent = prevLedger?.state === "retired" && issueLedger.state === "retired";
+      const decided = retiredSilent
+        ? { action: "silent" }
+        : decideIssueLifecycle({
+          prevLedger,
+          nextLedger: issueLedger,
+          tracking: read.tracking ?? null,
+          repository: ref.repository,
+          number: ref.number,
+          cardMarkers: markers,
+        });
       if (decided.action === "digest") {
         const delivery = await deliver(decided);
         if (delivery && delivery.delivered === true) {
           wakes += 1;
-          results.push(ledgerOf({ key: read.key, outcome: "digest", delivered: true }, nextLedger));
+          results.push(ledgerOf({ key: read.key, outcome: "digest", delivered: true }, issueLedger));
         } else {
           results.push({ key: read.key, outcome: "digest", delivered: false });
         }
         continue;
       }
-      results.push(ledgerOf({ key: read.key, outcome: decided.action }, nextLedger));
+      results.push(ledgerOf({ key: read.key, outcome: decided.action }, issueLedger));
       continue;
     }
 
-    const retiredTerminal = ref !== null && prevLedger?.state === "retired" && read.lifecycle?.terminal !== "open";
-    const decided = retiredTerminal
+    const nextLedger = ref && read.lifecycle ? lifecycleLedger(read.lifecycle) : null;
+    const retiredSilent = nextLedger !== null && prevLedger?.state === "retired" && nextLedger.state === "retired";
+    const decided = retiredSilent
       ? { action: "silent" }
       : decide({
         ...read.input,
@@ -215,16 +219,14 @@ export async function runPollTick({
         policy,
         cardMarkers: markers,
       });
-    const nextLedger = ref && read.lifecycle && decided.action !== "unknown"
-      ? lifecycleLedger(read.lifecycle)
-      : null;
+    const persistedLedger = decided.action === "unknown" ? null : nextLedger;
     if (decided.action === "digest") {
       const delivery = await deliver(decided);
       if (delivery && delivery.delivered === true) {
         wakes += 1;
         const entry = { key: read.key, outcome: "digest", delivered: true };
         if (decided.nextAck !== undefined) entry.ack = decided.nextAck;
-        results.push(ledgerOf(entry, nextLedger));
+        results.push(ledgerOf(entry, persistedLedger));
       } else {
         results.push({ key: read.key, outcome: "digest", delivered: false });
       }
@@ -235,7 +237,7 @@ export async function runPollTick({
     const entry = { key: read.key, outcome: decided.action };
     if (decided.nextAck !== undefined) entry.ack = decided.nextAck;
     if (decided.detail !== undefined) entry.detail = decided.detail;
-    results.push(ledgerOf(entry, nextLedger));
+    results.push(ledgerOf(entry, persistedLedger));
   }
   return { outcome: "tick-complete", reads: reads.length, wakes, results };
 }

@@ -73,7 +73,8 @@ export function normalizeSubscriptions(registry) {
 
 /** True when a discovered PR/issue number is excluded by the registry. */
 export function isExcluded(subscriptions, repository, number) {
-  return subscriptions.repository === repository && subscriptions.excludedNumbers.includes(number);
+  return subscriptions.repository.toLowerCase() === repository.toLowerCase()
+    && subscriptions.excludedNumbers.includes(number);
 }
 
 /**
@@ -83,7 +84,7 @@ export function isExcluded(subscriptions, repository, number) {
  */
 export function discoveryFilter(subscriptions) {
   if (!subscriptions) return () => true;
-  const explicit = new Set(subscriptions.refs.map((ref) => ref.key));
-  return (repository, number) => !explicit.has(refKey(repository, number))
+  const explicit = new Set(subscriptions.refs.map((ref) => refKey(ref.repository.toLowerCase(), ref.number)));
+  return (repository, number) => !explicit.has(refKey(repository.toLowerCase(), number))
     && !isExcluded(subscriptions, repository, number);
 }
