@@ -10,11 +10,15 @@ name: PR lint
 # In that mode the required card id stays advisory-only and is skipped by the strict
 # subset below (host and UI-link checks still fail).
 # Set INTERNAL_ID_PREFIXES to a comma- or pipe-separated list (e.g. "ABC,XYZ") to flag
-# org-specific ticket ids; empty means a generic ticket-like pattern that stays
-# advisory-only via INTERNAL_ID_LEVEL (base behavior).
+# org-specific ticket ids with the failing tracker gate. Deployment configuration:
+# a configured prefix list activates the failing gate for those org ids; empty
+# (as shipped here) means only the generic ticket-like pattern applies and it stays
+# advisory-only via INTERNAL_ID_LEVEL — unconfigured/generic tokens never fail
+# the strict subset.
 # Forward control for public repos: the strict subset (tracker ids scoped to the prefixes
 # above and only when prefixes are set, instance UI links anchored to the internal host,
-# and the internal host) always fails the PR title/body check. STRICT_INTERNAL_LEVEL
+# and the internal host) always fails the PR title/body check. Configured org ids fail;
+# unconfigured/generic tokens remain advisory. STRICT_INTERNAL_LEVEL
 # fail-closed: any value other than an explicit "warning" (or "warn") downgrade fails.
 # INTERNAL_ID_LEVEL is the floor for tracker-id findings: "error" there keeps a tracker
 # id failing even when the strict subset is downgraded to a warning.
@@ -35,7 +39,7 @@ concurrency:
 env:
   REQUIRE_CARD_REF: "false"
   INTERNAL_ID_LEVEL: "warning" # or "error" to fail a PR that carries an internal ticket id
-  INTERNAL_ID_PREFIXES: "" # e.g. "ABC,XYZ"; empty means a generic ticket-like pattern
+  INTERNAL_ID_PREFIXES: "" # e.g. "ABC,XYZ"; empty (shipped) keeps generic ids advisory-only
   STRICT_INTERNAL_LEVEL: "error" # fail-closed strict public-text gate; "warning" downgrades it
   PR_STANDARDS_MODE: "warn"
 
@@ -200,8 +204,12 @@ jobs:
                   if hits:
                       if report_strict(hits, where):
                           failed = True
-                  elif internal_id_notes(text, where):
-                      failed = True
+                  # Generic-id gate runs independently unless the strict hit already
+                  # covered the tracker id: with empty prefixes a host/UI warning must
+                  # not swallow an INTERNAL_ID_LEVEL=error failure.
+                  if "a tracker id" not in hits:
+                      if internal_id_notes(text, where):
+                          failed = True
           else:
               for c in json.loads(os.environ.get("COMMITS") or "[]") or []:
                   subject = (c.get("message") or "").splitlines()[0] if c.get("message") else ""
