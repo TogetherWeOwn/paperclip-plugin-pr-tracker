@@ -31,6 +31,7 @@ test('failing-first: open CISO hold resolves to fail', () => {
     number: 1,
     headSha: 'a'.repeat(40),
     linkedCards: [card({ hasOpenCisoHold: true })],
+    linkVerified: true,
   })
   assert.equal(out.state, 'fail')
   assert.equal(out.reason, 'ciso-hold')
@@ -42,6 +43,7 @@ test('failing-first: unresolved blocker resolves to fail', () => {
     number: 1,
     headSha: 'a'.repeat(40),
     linkedCards: [card({ unresolvedBlockerCount: 2 })],
+    linkVerified: true,
   })
   assert.equal(out.state, 'fail')
   assert.equal(out.reason, 'blocker')
@@ -53,6 +55,7 @@ test('clear cards resolve to pass', () => {
     number: 1,
     headSha: 'a'.repeat(40),
     linkedCards: [card(), card({ issueId: 'issue-demo-2', identifier: 'DEMO-2' })],
+    linkVerified: true,
   })
   assert.equal(out.state, 'pass')
 })
@@ -68,20 +71,48 @@ test('fail-closed: unreadable board resolves to fail, never pass', () => {
       number: 1,
       headSha: 'a'.repeat(40),
       linkedCards,
+      linkVerified: true,
     })
     assert.equal(out.state, 'fail', JSON.stringify(linkedCards))
   }
 })
 
-test('untracked PR (no linked cards) resolves to pass with no-linked-card', () => {
+test('unverified untracked PR (no linked cards, linkVerified false) resolves to fail with board-unreadable', () => {
   const out = decideHoldGate({
     repository: 'org/repo',
     number: 1,
     headSha: 'a'.repeat(40),
     linkedCards: [],
+    linkVerified: false,
+  })
+  assert.equal(out.state, 'fail')
+  assert.equal(out.reason, 'board-unreadable')
+})
+
+test('verified untracked PR (no linked cards, linkVerified true) resolves to pass with no-linked-card', () => {
+  const out = decideHoldGate({
+    repository: 'org/repo',
+    number: 1,
+    headSha: 'a'.repeat(40),
+    linkedCards: [],
+    linkVerified: true,
   })
   assert.equal(out.state, 'pass')
   assert.equal(out.reason, 'no-linked-card')
+})
+
+test('omitted linkVerified throws, never resolves to silent pass', () => {
+  assert.throws(() => decideHoldGate({ repository: 'org/repo', number: 1, headSha: 'a'.repeat(40), linkedCards: [] }))
+  assert.throws(() => decideHoldGate({ repository: 'org/repo', number: 1, headSha: 'a'.repeat(40), linkedCards: [card()] }))
+})
+
+test('non-boolean linkVerified throws, never resolves to silent pass', () => {
+  for (const linkVerified of ['true', 1, 0, 'false', null, undefined, {}, []]) {
+    assert.throws(
+      () => decideHoldGate({ repository: 'org/repo', number: 1, headSha: 'a'.repeat(40), linkedCards: [], linkVerified }),
+      `linkVerified=${String(linkVerified)}`,
+    )
+  }
 })
 
 test('CISO hold takes precedence over blocker in the reason', () => {
@@ -90,13 +121,14 @@ test('CISO hold takes precedence over blocker in the reason', () => {
     number: 1,
     headSha: 'a'.repeat(40),
     linkedCards: [card({ hasOpenCisoHold: true, unresolvedBlockerCount: 3 })],
+    linkVerified: true,
   })
   assert.equal(out.state, 'fail')
   assert.equal(out.reason, 'ciso-hold')
 })
 
 test('malformed input throws, never resolves to silent pass', () => {
-  assert.throws(() => decideHoldGate({ repository: 'bad', number: 1, headSha: 'a'.repeat(40), linkedCards: [] }))
-  assert.throws(() => decideHoldGate({ repository: 'org/repo', number: 0, headSha: 'a'.repeat(40), linkedCards: [] }))
-  assert.throws(() => decideHoldGate({ repository: 'org/repo', number: 1, headSha: 'short', linkedCards: [] }))
+  assert.throws(() => decideHoldGate({ repository: 'bad', number: 1, headSha: 'a'.repeat(40), linkedCards: [], linkVerified: true }))
+  assert.throws(() => decideHoldGate({ repository: 'org/repo', number: 0, headSha: 'a'.repeat(40), linkedCards: [], linkVerified: true }))
+  assert.throws(() => decideHoldGate({ repository: 'org/repo', number: 1, headSha: 'short', linkedCards: [], linkVerified: true }))
 })
