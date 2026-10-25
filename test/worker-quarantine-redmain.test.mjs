@@ -90,6 +90,65 @@ test("red-main tick appends to the open owner and opens only when needed", async
   }
 });
 
+for (const stage of ["owner-lookup", "append-evidence", "open-card", "routing"]) {
+  for (const asynchronous of stage === "routing" ? [false] : [false, true]) {
+    test(`red-main tick records ${stage} ${asynchronous ? "rejection" : "throw"} and continues`, async () => {
+      const signals = [501, 502, 503].map((runId) => ({
+        repo: "acme/two-web-next", branch: "main", status: "red", runId,
+        workflowPath: ".github/workflows/ci.yml",
+      }));
+      const owner = { id: "owner-1", title: "DEPLOY RED: two-web-next/ci failing on main", status: "todo" };
+      const completed = [];
+      const fail = () => {
+        if (asynchronous) return Promise.reject(new Error("dependency unavailable"));
+        throw new Error("dependency unavailable");
+      };
+      const out = await runRedMainTick({
+        signals,
+        ownersFor: (signal) => {
+          if (signal.runId === 502 && stage === "owner-lookup") return fail();
+          if (signal.runId === 502 && stage === "routing") return {}; // invalid owner response
+          return stage === "append-evidence" ? [owner] : [];
+        },
+        ledger: [],
+        appendEvidence: ({ signal }) => {
+          if (signal.runId === 502 && stage === "append-evidence") return fail();
+          completed.push(signal.runId);
+        },
+        openCard: (signal) => {
+          if (signal.runId === 502 && stage === "open-card") return fail();
+          completed.push(signal.runId);
+          return `card-${signal.runId}`;
+        },
+      });
+      assert.deepEqual(completed, [501, 503]);
+      assert.equal(out.outcomes.length, 3);
+      assert.equal(out.outcomes[0].runId, 501);
+      assert.equal(out.outcomes[2].runId, 503);
+      const failed = out.outcomes[1];
+      assert.equal(failed.status, "red");
+      assert.equal(failed.runId, 502);
+      assert.equal(failed.action, stage === "owner-lookup" ? "skip" : "error");
+      assert.equal(failed.reason, `${stage}-failed`);
+      assert.ok(failed.error.length > 0);
+      if (stage !== "routing") assert.equal(failed.error, "dependency unavailable");
+    });
+  }
+}
+
+test("red-main tick accepts asynchronous owner reads without creating duplicates", async () => {
+  const appended = [];
+  const out = await runRedMainTick({
+    signals: [{ repo: "two-web-next", status: "red", runId: 504, workflowPath: ".github/workflows/ci.yml" }],
+    ownersFor: async () => [{ id: "owner-1", title: "DEPLOY RED: two-web-next/ci failing on main", status: "todo" }],
+    ledger: [],
+    appendEvidence: async (e) => void appended.push(e.signal.runId),
+    openCard: async () => assert.fail("must append to existing owner"),
+  });
+  assert.deepEqual(appended, [504]);
+  assert.equal(out.outcomes[0].action, "append");
+});
+
 test("jobs register under the manifest keys", () => {
   const seen = {};
   const ctx = { jobs: { register: (k, fn) => void (seen[k] = fn) } };
