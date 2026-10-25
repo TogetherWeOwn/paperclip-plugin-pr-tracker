@@ -17,6 +17,8 @@ export const PLUGIN_API_VERSION = "v1";
 
 export const JOB_KEYS = Object.freeze({
   pollPrs: "pollPrs",
+  flakyQuarantine: "flakyQuarantine",
+  redMainSignal: "redMainSignal",
 });
 
 /**
@@ -98,6 +100,20 @@ export const manifest = Object.freeze({
       description:
         "Read-only REST collection with ETag conditional requests (304s are free) over owner-authored upstream PRs plus all open org PRs, then feed the decision core. Every 2 minutes so event-to-wake stays within 5 minutes.",
       schedule: "*/2 * * * *",
+    },
+    {
+      jobKey: JOB_KEYS.flakyQuarantine,
+      displayName: "Flaky quarantine",
+      description:
+        "Quarantine-and-label for proven flakes: rerun-once verdicts from the flip-rate ledger (rate > 0.2 over >= 5 runs) label the test with an evidence link for the doer. Unproven labels never block a PR. Every 10 minutes, matching the retired host cadence.",
+      schedule: "*/10 * * * *",
+    },
+    {
+      jobKey: JOB_KEYS.redMainSignal,
+      displayName: "Red main signal",
+      description:
+        "Authoritative base signal from the latest completed main-branch runs, with once-per-incident routing to the open owner card and time-to-green on recovery. Alert-only: never reverts, merges, or pauses anything. Every 5 minutes.",
+      schedule: "*/5 * * * *",
     },
   ],
 });

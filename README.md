@@ -48,6 +48,31 @@ so nothing is forgotten.
   issue routing, unknown reads never retire, delivery-gated ledger, auth halt.
 - `scripts/pack.sh` — mirrors dependency-free ESM into `dist/` with the two
   manifest entrypoints (`npm run build` wiring rides the export).
+- `src/decision-core/flake-quarantine.js` — pure flake-triage core. No I/O:
+  five-dialect log parsing, `repo|workflow|job|test` ledger keys, the
+  flip-rate ladder (rate > 0.2 over >= 5 runs), quarantine-and-label with an
+  evidence link, and the hard fence that an unproven label never blocks a PR
+  (the only actions are `label` and `none`). `weeklyReport` commits every
+  denominator, including reruns per merged PR with n.
+- `test/flake-quarantine.test.mjs` + `test/fixtures/flake-backfill-7d.json` —
+  offline suite ending in a 7-day backfill pass: labels land only on proven
+  flakes (precision 1.0 on the fixture).
+- `src/decision-core/red-main-signal.js` — pure red-main core. No I/O: the
+  authoritative base signal from the latest completed main-branch run,
+  once-per-incident routing (`create`/`append`/`noop`/`skip` against open
+  owner cards and the evidence ledger), and time-to-green. Alert-only: no
+  revert, merge, block or queue action exists here.
+- `test/red-main-signal.test.mjs` — offline suite for the signal core,
+  including the alert-only fence.
+- `src/worker/flake-quarantine.js` — `flakyQuarantine` adapter: `runQuarantineTick`
+  (ledger + attempt-1 failures in, injected `applyLabel` out) plus job
+  registration under the manifest key. Unproven tests never reach `applyLabel`.
+- `src/worker/red-main-signal.js` — `redMainSignal` adapter: `runRedMainTick`
+  (base signals in, injected `appendEvidence`/`openCard` out; green signals
+  are reported and left alone) plus job registration.
+- `test/worker-quarantine-redmain.test.mjs` — offline suite for both adapters
+  over fakes: label/route exactly when the core says so, register under the
+  manifest keys, never invent a block/revert/merge.
 - `src/worker/poll-prs.js` — `pollPrs` collector. Pure and dependency-free:
   scope dedup, ETag conditional headers, status classifier (401/403 stops the
   source — never substitute credentials; 429/5xx backs off; anything else
