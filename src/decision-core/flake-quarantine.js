@@ -115,21 +115,26 @@ export function decideQuarantine({ ledger, repo, workflow, job, tests, evidenceU
   requireValue(typeof evidenceUrl === "string" && evidenceUrl.length > 0, "evidenceUrl is required");
   return Object.freeze(
     tests.map((name) => {
-      const verdict = isFlaky(ledger, repo, name);
-      if (verdict.flaky) {
+      // Fuzzy isFlaky() queries are for human triage, never label authority.
+      const key = ledgerKey({ repo: normRepoShort(repo), workflow, job, test: name });
+      const flakes = ledger.flakes ?? {};
+      const proof = Object.hasOwn(flakes, key) ? flakes[key] : null;
+      const observations = proof?.observations ?? 0;
+      const rate = flipRate(proof);
+      if (observations >= 5 && rate > 0.2) {
         return Object.freeze({
           action: "label",
           label: QUARANTINE_LABEL,
-          key: ledgerKey({ repo: normRepoShort(repo), workflow, job, test: name }),
+          key,
           evidenceUrl,
-          note: `proven flake: ${verdict.detail.observations} obs, flip-rate ${verdict.detail.rate}`,
+          note: `proven flake: ${observations} obs, flip-rate ${Math.round(rate * 1000) / 1000}`,
         });
       }
       return Object.freeze({
         action: "none",
-        key: ledgerKey({ repo: normRepoShort(repo), workflow, job, test: name }),
+        key,
         evidenceUrl,
-        reason: verdict.detail.match === null ? verdict.detail.reason : "unproven: below the ladder bar",
+        reason: proof == null ? "not in ledger: treat red as real and fix it" : "unproven: below the ladder bar",
       });
     }),
   );

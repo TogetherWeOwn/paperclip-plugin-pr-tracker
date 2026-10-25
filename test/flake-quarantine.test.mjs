@@ -100,6 +100,71 @@ test("decideQuarantine labels a proven flake with the evidence link", () => {
   assert.match(out[0].note, /7 obs/);
 });
 
+for (const mismatch of [
+  { test: "cart", workflow: "ci", job: "e2e" },
+  { test: "cart::checkout", workflow: "nightly", job: "e2e" },
+  { test: "cart::checkout", workflow: "ci", job: "other" },
+  { test: "CART::CHECKOUT", workflow: "ci", job: "e2e" },
+]) {
+  test(`decideQuarantine requires exact identity: ${JSON.stringify(mismatch)}`, () => {
+    const [out] = decideQuarantine({
+      ledger: ledger([["two-web-next|ci|e2e|cart::checkout", { observations: 7, flips: 2 }]]),
+      repo: "two-web-next",
+      workflow: mismatch.workflow,
+      job: mismatch.job,
+      tests: [mismatch.test],
+      evidenceUrl: "https://ci.example.invalid/runs/123",
+    });
+    assert.equal(out.action, "none");
+    assert.match(out.reason, /not in ledger/);
+  });
+}
+
+test("decideQuarantine direct counter-evidence wins over a proven substring sibling", () => {
+  const [out] = decideQuarantine({
+    ledger: ledger([
+      ["two-web-next|ci|e2e|cart::checkout", { observations: 7, flips: 2 }],
+      ["two-web-next|ci|e2e|cart", { observations: 6, flips: 0 }],
+    ]),
+    repo: "two-web-next",
+    workflow: "ci",
+    job: "e2e",
+    tests: ["cart"],
+    evidenceUrl: "https://ci.example.invalid/runs/123",
+  });
+  assert.equal(out.action, "none");
+  assert.match(out.reason, /below the ladder bar/);
+});
+
+test("decideQuarantine cites the exact proof, not a sibling with more observations", () => {
+  const [out] = decideQuarantine({
+    ledger: ledger([
+      ["two-web-next|nightly|other|cart::checkout", { observations: 20, flips: 9 }],
+      ["two-web-next|ci|e2e|cart", { observations: 5, flips: 2 }],
+    ]),
+    repo: "Acme/TWO-WEB-NEXT",
+    workflow: "ci",
+    job: "e2e",
+    tests: ["cart"],
+    evidenceUrl: "https://ci.example.invalid/runs/123",
+  });
+  assert.equal(out.action, "label");
+  assert.equal(out.key, "two-web-next|ci|e2e|cart");
+  assert.equal(out.note, "proven flake: 5 obs, flip-rate 0.4");
+});
+
+for (const proof of [{ observations: 4, flips: 4 }, { observations: 5, flips: 1 }]) {
+  test(`decideQuarantine exact proof must still meet the ladder bar: ${JSON.stringify(proof)}`, () => {
+    const [out] = decideQuarantine({
+      ledger: ledger([["two-web-next|ci|e2e|cart", proof]]),
+      repo: "two-web-next", workflow: "ci", job: "e2e", tests: ["cart"],
+      evidenceUrl: "https://ci.example.invalid/runs/123",
+    });
+    assert.equal(out.action, "none");
+    assert.match(out.reason, /below the ladder bar/);
+  });
+}
+
 test("decideQuarantine never blocks on an unproven label", () => {
   const state = ledger([["two-web-next|ci|e2e|cart::guest", { observations: 2, flips: 2 }]]);
   const out = decideQuarantine({
