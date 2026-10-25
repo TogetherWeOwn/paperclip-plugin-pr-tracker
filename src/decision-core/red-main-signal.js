@@ -141,7 +141,8 @@ export function baseSignal({ repo, branch, runs }) {
   if (conclusion === "success" || conclusion === "skipped" || conclusion === "neutral") {
     return Object.freeze({ repo, branch, status: "green", runId: latest.id ?? null, workflowPath, workflowName });
   }
-  if (conclusion === "failure" || conclusion === "timed_out" || conclusion === "action_required") {
+  // Startup failures and stale runs also failed to establish a healthy main.
+  if (["failure", "timed_out", "action_required", "startup_failure", "stale"].includes(conclusion)) {
     return Object.freeze({
       repo,
       branch,

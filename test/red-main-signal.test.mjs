@@ -126,6 +126,26 @@ test("baseSignal reads red from the latest completed main run", () => {
   assert.equal(empty.status, "unknown");
 });
 
+for (const conclusion of ["startup_failure", "stale"]) {
+  test(`baseSignal treats completed ${conclusion} as red with routing evidence`, () => {
+    const sig = baseSignal({
+      repo: "acme/two-web-next",
+      branch: "main",
+      runs: [
+        RUN({ id: 100, conclusion: "success", updatedAt: "2026-10-20T02:00:00Z" }),
+        RUN({ conclusion, status: "completed" }),
+      ],
+    });
+    assert.deepEqual(sig, {
+      repo: "acme/two-web-next", branch: "main", status: "red", runId: 101,
+      workflowPath: ".github/workflows/ci.yml", workflowName: "CI",
+      firstRedSha: "abc123def456", firstRedAt: "2026-10-20T03:00:00Z",
+      runUrl: "https://ci.example.invalid/runs/101",
+    });
+    assert.equal(decide({ observation: sig, owners: [OWNER()], ledger: [] }).action, "append");
+  });
+}
+
 test("baseSignal ignores cancelled runs and PR-branch runs", () => {
   const s = baseSignal({
     repo: "two-web-next",
