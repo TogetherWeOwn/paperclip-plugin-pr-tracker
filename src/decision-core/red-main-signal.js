@@ -67,15 +67,16 @@ function sortKey(issue) {
 /**
  * Route one red observation. `owners` are candidate DEPLOY RED cards with
  * `evidenceRunIds`; `ledger` holds already-actioned (repo, workflow, run_id)
- * rows. Never creates on a failed lookup: callers pass `skip` through when
- * the owner read failed.
+ * rows. Never creates without a full workflow identity: a signal that cannot
+ * be matched to exactly one (repo, workflow) returns `skip` so callers open
+ * nothing; callers also pass `skip` through when the owner read failed.
  */
 export function decide({ observation, owners, ledger }) {
   requireValue(observation && typeof observation === "object", "observation is required");
   const [repo, workflow] = observationIdentity(observation);
   const runId = String(observation.runId ?? observation.run_id ?? "");
   if (!repo || !workflow || !runId) {
-    return Object.freeze({ action: "create", ownerId: null, reason: "no-workflow-identity" });
+    return Object.freeze({ action: "skip", ownerId: null, reason: "no-workflow-identity" });
   }
   if (ledgerHit(ledger ?? [], repo, workflow, runId)) {
     return Object.freeze({ action: "noop", ownerId: null, reason: "run-already-actioned" });
@@ -99,23 +100,46 @@ export function decide({ observation, owners, ledger }) {
   return Object.freeze({ action: "create", ownerId: null, reason: "no-open-owner" });
 }
 
+function runWorkflowPath(run) {
+  return String(run.workflowPath ?? run.workflow_path ?? run.path ?? "").trim();
+}
+
+function runWorkflowName(run) {
+  return String(run.workflowName ?? run.workflow_display ?? run.workflow ?? run.name ?? "").trim();
+}
+
+function isUsableRun(r) {
+  if (!r) return false;
+  // Only finished runs decide: queued/in_progress (conclusion null) must not
+  // shadow an older completed red/green. Runs without a status field (offline
+  // fixtures) are treated as completed.
+  if (r.status != null && r.status !== "completed") return false;
+  if (r.conclusion == null || r.conclusion === "cancelled") return false;
+  return true;
+}
+
 /**
  * Authoritative base signal from main-branch runs: the newest completed,
- * non-cancelled run decides. Cancelled (concurrency-superseded) runs and an
- * empty set are not a signal (`unknown`), never green and never red.
+ * non-cancelled run decides. Cancelled (concurrency-superseded) runs,
+ * still-running runs, and an empty set are not a signal (`unknown`), never
+ * green and never red. The signal carries the deciding run's workflow
+ * identity (`workflowPath`/`workflowName`) so `decide()` can route it to the
+ * one matching owner card instead of opening a duplicate.
  */
 export function baseSignal({ repo, branch, runs }) {
   requireValue(typeof repo === "string" && repo.length > 0, "repo is required");
   requireValue(typeof branch === "string" && branch.length > 0, "branch is required");
   requireValue(Array.isArray(runs), "runs must be an array");
-  const usable = runs.filter((r) => r && r.status !== "cancelled" && r.conclusion !== "cancelled");
+  const usable = runs.filter(isUsableRun);
   if (!usable.length) {
     return Object.freeze({ repo, branch, status: "unknown", reason: "no-completed-runs" });
   }
   const latest = usable.reduce((a, b) => (String(b.updatedAt ?? b.updated_at ?? "") > String(a.updatedAt ?? a.updated_at ?? "") ? b : a));
   const conclusion = latest.conclusion;
+  const workflowPath = runWorkflowPath(latest);
+  const workflowName = runWorkflowName(latest);
   if (conclusion === "success" || conclusion === "skipped" || conclusion === "neutral") {
-    return Object.freeze({ repo, branch, status: "green", runId: latest.id ?? null });
+    return Object.freeze({ repo, branch, status: "green", runId: latest.id ?? null, workflowPath, workflowName });
   }
   if (conclusion === "failure" || conclusion === "timed_out" || conclusion === "action_required") {
     return Object.freeze({
@@ -123,6 +147,8 @@ export function baseSignal({ repo, branch, runs }) {
       branch,
       status: "red",
       runId: latest.id ?? null,
+      workflowPath,
+      workflowName,
       firstRedSha: latest.headSha ?? latest.head_sha ?? null,
       firstRedAt: latest.updatedAt ?? latest.updated_at ?? null,
       runUrl: latest.url ?? latest.html_url ?? null,

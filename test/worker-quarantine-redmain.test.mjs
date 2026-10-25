@@ -99,3 +99,19 @@ test("jobs register under the manifest keys", () => {
   assert.equal(seen[JOB_KEYS.flakyQuarantine], tick);
   assert.equal(seen[JOB_KEYS.redMainSignal], tick);
 });
+
+test("red-main tick never opens a card for a workflow-less red signal", async () => {
+  let opened = 0;
+  const out = await runRedMainTick({
+    signals: [{ repo: "acme/two-web-next", branch: "main", status: "red", runId: 401 }],
+    ownersFor: () => [],
+    ledger: [],
+    appendEvidence: async () => {},
+    openCard: async () => {
+      opened += 1;
+      return "DEMO-12";
+    },
+  });
+  assert.equal(out.outcomes[0].action, "skip");
+  assert.equal(opened, 0);
+});

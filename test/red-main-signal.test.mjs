@@ -104,7 +104,7 @@ test("decide ignores hidden and terminal owner cards", () => {
 
 test("decide needs a full workflow identity", () => {
   const d = decide({ observation: { repo: "", runId: 1 }, owners: [], ledger: [] });
-  assert.equal(d.action, "create");
+  assert.equal(d.action, "skip");
   assert.equal(d.reason, "no-workflow-identity");
 });
 
@@ -159,4 +159,57 @@ test("the core never proposes revert, merge, block or queue actions", () => {
   }
   const red = baseSignal({ repo: "r", branch: "main", runs: [RUN({ conclusion: "failure" })] });
   assert.ok(!("revert" in red || "merge" in red || "block" in red));
+});
+
+test("baseSignal carries the failed workflow identity so routing can append", () => {
+  const sig = baseSignal({
+    repo: "acme/two-web-next",
+    branch: "main",
+    runs: [RUN({ conclusion: "failure", status: "completed" })],
+  });
+  assert.equal(sig.status, "red");
+  assert.equal(sig.workflowPath, ".github/workflows/ci.yml");
+  assert.equal(sig.workflowName, "CI");
+  const routed = decide({
+    observation: {
+      repo: sig.repo,
+      workflowPath: sig.workflowPath ?? "",
+      workflowName: sig.workflowName ?? "",
+      runId: sig.runId,
+    },
+    owners: [
+      {
+        id: "owner-1",
+        title: "DEPLOY RED: two-web-next/ci failing on main",
+        status: "todo",
+        createdAt: "2026-10-20T03:05:00Z",
+        hidden: false,
+        evidenceRunIds: [],
+      },
+    ],
+    ledger: [],
+  });
+  assert.equal(routed.action, "append");
+  assert.equal(routed.ownerId, "owner-1");
+});
+
+test("baseSignal ignores in-progress and queued runs shadowing a completed red", () => {
+  const sig = baseSignal({
+    repo: "two-web-next",
+    branch: "main",
+    runs: [
+      RUN({ id: 100, updatedAt: "2026-10-20T03:00:00Z", conclusion: "failure", status: "completed" }),
+      RUN({ id: 101, updatedAt: "2026-10-20T03:05:00Z", conclusion: null, status: "in_progress" }),
+      RUN({ id: 102, updatedAt: "2026-10-20T03:06:00Z", conclusion: null, status: "queued" }),
+    ],
+  });
+  assert.equal(sig.status, "red");
+  assert.equal(sig.runId, 100);
+});
+
+test("decide skips instead of opening a card when workflow identity is missing", () => {
+  const d = decide({ observation: { repo: "acme/two-web-next", runId: 9 }, owners: [], ledger: [] });
+  assert.equal(d.action, "skip");
+  assert.equal(d.reason, "no-workflow-identity");
+  assert.equal(d.ownerId, null);
 });
