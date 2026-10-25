@@ -101,7 +101,8 @@ export function decide({ observation, owners, ledger }) {
 }
 
 function runWorkflowPath(run) {
-  return String(run.workflowPath ?? run.workflow_path ?? run.path ?? "").trim();
+  // GitHub may suffix the file path with @ref, including slashful refs.
+  return String(run.workflowPath ?? run.workflow_path ?? run.path ?? "").trim().split("@")[0];
 }
 
 function runWorkflowName(run) {

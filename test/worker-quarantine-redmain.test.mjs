@@ -14,6 +14,7 @@ import {
 import {
   runRedMainTick,
   registerRedMainSignalJob,
+  baseSignal,
 } from "../src/worker/red-main-signal.js";
 
 const LEDGER = {
@@ -208,6 +209,33 @@ test("jobs register under the manifest keys", () => {
   assert.equal(seen[JOB_KEYS.flakyQuarantine], tick);
   assert.equal(seen[JOB_KEYS.redMainSignal], tick);
 });
+
+for (const ref of ["main", "refs/heads/release/fix"]) {
+  test(`red-main routes API run with @${ref} path suffix to its open owner`, async () => {
+    const signal = baseSignal({
+      repo: "acme/two-web-next", branch: "main",
+      runs: [{
+        id: 601, path: `.github/workflows/ci.yml@${ref}`, name: "Unrelated display name",
+        status: "completed", conclusion: "failure", head_sha: "abc123",
+        updated_at: "2026-10-20T03:00:00Z", html_url: "https://ci.example.invalid/runs/601",
+      }],
+    });
+    const appended = [];
+    const out = await runRedMainTick({
+      signals: [signal],
+      ownersFor: () => [{ id: "owner-1", title: "DEPLOY RED: two-web-next/ci failing on main", status: "todo" }],
+      ledger: [],
+      appendEvidence: async (e) => void appended.push(e),
+      openCard: async () => assert.fail("must not duplicate the open owner card"),
+    });
+    assert.equal(out.outcomes[0].action, "append");
+    assert.equal(appended.length, 1);
+    assert.equal(appended[0].ownerId, "owner-1");
+    assert.equal(appended[0].signal.workflowPath, ".github/workflows/ci.yml");
+    assert.equal(appended[0].signal.runId, 601);
+    assert.equal(appended[0].signal.runUrl, "https://ci.example.invalid/runs/601");
+  });
+}
 
 test("red-main tick never opens a card for a workflow-less red signal", async () => {
   let opened = 0;
