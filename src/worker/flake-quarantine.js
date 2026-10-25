@@ -18,8 +18,10 @@ import { decideQuarantine } from "../decision-core/flake-quarantine.js";
  * - `applyLabel`: `async (decision) => cardRef` — host labels the flaky
  *   test / opens-or-updates the quarantine card with the evidence link.
  *
- * Returns `{ decisions, applied }`. Unproven tests return `none` and are
- * never passed to `applyLabel`.
+ * Returns `{ decisions, applied, errors }`. Unproven tests return `none`
+ * and are never passed to `applyLabel`. Validation and label failures are
+ * recorded by failureIndex (and decision key for label failures). A failed
+ * label is not recorded as applied and never prevents later tests/entries.
  */
 export async function runQuarantineTick({ ledger, failures, applyLabel }) {
   if (!ledger || typeof ledger !== "object") throw new Error("runQuarantineTick: ledger is required");
@@ -27,24 +29,39 @@ export async function runQuarantineTick({ ledger, failures, applyLabel }) {
   if (typeof applyLabel !== "function") throw new Error("runQuarantineTick: applyLabel() is required");
   const decisions = [];
   const applied = [];
-  for (const f of failures) {
-    const decided = decideQuarantine({
-      ledger,
-      repo: f.repo,
-      workflow: f.workflow,
-      job: f.job,
-      tests: f.tests ?? [],
-      evidenceUrl: f.evidenceUrl,
-    });
+  const errors = [];
+  for (const [failureIndex, f] of failures.entries()) {
+    let decided;
+    try {
+      decided = decideQuarantine({
+        ledger,
+        repo: f.repo,
+        workflow: f.workflow,
+        job: f.job,
+        tests: f.tests ?? [],
+        evidenceUrl: f.evidenceUrl,
+      });
+    } catch (error) {
+      errors.push({ failureIndex, stage: "decision", error: String(error?.message ?? error) });
+      continue;
+    }
     for (const d of decided) {
       decisions.push(d);
       if (d.action === "label") {
-        const cardRef = await applyLabel(d);
-        applied.push({ key: d.key, cardRef });
+        try {
+          const cardRef = await applyLabel(d);
+          applied.push({ key: d.key, cardRef });
+        } catch (error) {
+          errors.push({ failureIndex, stage: "apply-label", key: d.key, error: String(error?.message ?? error) });
+        }
       }
     }
   }
-  return Object.freeze({ decisions: Object.freeze(decisions), applied: Object.freeze(applied) });
+  return Object.freeze({
+    decisions: Object.freeze(decisions),
+    applied: Object.freeze(applied),
+    errors: Object.freeze(errors),
+  });
 }
 
 /** Register the host-scheduled job. `makeTick` builds the zero-arg tick. */

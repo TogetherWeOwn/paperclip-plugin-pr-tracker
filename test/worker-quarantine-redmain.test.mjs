@@ -53,6 +53,56 @@ test("quarantine tick validates its inputs", async () => {
   await assert.rejects(() => runQuarantineTick({ ledger: LEDGER, applyLabel: async () => {} }), /failures/);
 });
 
+for (const asynchronous of [false, true]) {
+  test(`quarantine tick records label ${asynchronous ? "rejection" : "throw"} and processes later tests and entries`, async () => {
+    const applied = [];
+    const failure = (tests) => ({
+      repo: "sample", workflow: "ci", job: "unit", tests,
+      evidenceUrl: "https://ci.example.invalid/runs/9",
+    });
+    const out = await runQuarantineTick({
+      ledger: { flakes: Object.fromEntries(["t1", "t2", "t3", "t4"].map((name) => [
+        `sample|ci|unit|${name}`, { observations: 7, flips: 2 },
+      ])) },
+      failures: [failure(["t1", "t2", "t3"]), failure(["t4"])],
+      applyLabel: (d) => {
+        if (d.key.endsWith("|t2")) {
+          if (asynchronous) return Promise.reject(new Error("label unavailable"));
+          throw new Error("label unavailable");
+        }
+        applied.push(d.key);
+        return `card-${d.key}`;
+      },
+    });
+    assert.deepEqual(applied, ["sample|ci|unit|t1", "sample|ci|unit|t3", "sample|ci|unit|t4"]);
+    assert.deepEqual(out.applied.map((d) => d.key), applied);
+    assert.equal(out.decisions.length, 4);
+    assert.deepEqual(out.errors, [{
+      failureIndex: 0, stage: "apply-label", key: "sample|ci|unit|t2", error: "label unavailable",
+    }]);
+  });
+}
+
+for (const malformed of [null, { evidenceUrl: undefined }, { tests: "not-an-array" }]) {
+  test(`quarantine tick records malformed entry ${JSON.stringify(malformed)} and continues`, async () => {
+    const valid = {
+      repo: "two-web-next", workflow: "ci", job: "e2e", tests: ["cart::checkout"],
+      evidenceUrl: "https://ci.example.invalid/runs/9",
+    };
+    const out = await runQuarantineTick({
+      ledger: LEDGER,
+      failures: [valid, malformed === null ? null : { ...valid, ...malformed }, valid],
+      applyLabel: async () => "card-1",
+    });
+    assert.equal(out.decisions.length, 2);
+    assert.equal(out.applied.length, 2);
+    assert.equal(out.errors.length, 1);
+    assert.equal(out.errors[0].failureIndex, 1);
+    assert.equal(out.errors[0].stage, "decision");
+    assert.ok(out.errors[0].error.length > 0);
+  });
+}
+
 test("red-main tick appends to the open owner and opens only when needed", async () => {
   const appended = [];
   const opened = [];
