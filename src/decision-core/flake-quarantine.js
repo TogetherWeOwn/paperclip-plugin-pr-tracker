@@ -143,7 +143,8 @@ export function decideQuarantine({ ledger, repo, workflow, job, tests, evidenceU
 /**
  * Weekly report with denominators. Inputs are caller-supplied counts; the
  * report commits every denominator so the trend (reruns per merged PR with
- * n, red rate with window) is auditable.
+ * n, red rate with window) is auditable. A rate with a zero denominator is
+ * unmeasured: `value` is null while the denominator is still reported.
  */
 export function weeklyReport({ ledger, reruns, mergedPRs, redRate }) {
   requireValue(ledger && typeof ledger === "object", "ledger is required");
@@ -165,12 +166,12 @@ export function weeklyReport({ ledger, reruns, mergedPRs, redRate }) {
     keys: entries.length,
     entries: Object.freeze(entries),
     rerunsPerMergedPR: Object.freeze({
-      value: mergedPRs === 0 ? 0 : Math.round((reruns / mergedPRs) * 1000) / 1000,
+      value: mergedPRs === 0 ? null : Math.round((reruns / mergedPRs) * 1000) / 1000,
       reruns,
       n: mergedPRs,
     }),
     redRate: Object.freeze({
-      value: redRate.total === 0 ? 0 : Math.round((redRate.red / redRate.total) * 1000) / 1000,
+      value: redRate.total === 0 ? null : Math.round((redRate.red / redRate.total) * 1000) / 1000,
       red: redRate.red,
       total: redRate.total,
       windowDays: redRate.windowDays ?? 7,

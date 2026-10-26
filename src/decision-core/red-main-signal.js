@@ -9,6 +9,10 @@
 
 const TITLE_RE = /^DEPLOY RED:\s*([^/\s]+)\/(.+?)\s+failing on main\b/i;
 const TERMINAL = new Set(["done", "cancelled"]);
+// Completed runs that did not exercise the code: cancelled (concurrency-
+// superseded), neutral, and skipped (e.g. a path-filter skip) prove nothing
+// about the branch, so they can neither assert green nor clear an earlier red.
+const NO_EVIDENCE = new Set(["cancelled", "neutral", "skipped"]);
 
 function requireValue(condition, message) {
   if (!condition) throw new Error(message);
@@ -113,19 +117,21 @@ function isUsableRun(r) {
   if (!r) return false;
   // Only finished runs decide: queued/in_progress (conclusion null) must not
   // shadow an older completed red/green. Runs without a status field (offline
-  // fixtures) are treated as completed.
+  // fixtures) are treated as completed. No-evidence conclusions (cancelled,
+  // neutral, skipped) are excluded for the same reason.
   if (r.status != null && r.status !== "completed") return false;
-  if (r.conclusion == null || r.conclusion === "cancelled") return false;
+  if (r.conclusion == null || NO_EVIDENCE.has(r.conclusion)) return false;
   return true;
 }
 
 /**
  * Authoritative base signal from main-branch runs: the newest completed,
- * non-cancelled run decides. Cancelled (concurrency-superseded) runs,
- * still-running runs, and an empty set are not a signal (`unknown`), never
- * green and never red. The signal carries the deciding run's workflow
- * identity (`workflowPath`/`workflowName`) so `decide()` can route it to the
- * one matching owner card instead of opening a duplicate.
+ * evidence-bearing run decides. Cancelled, neutral, and skipped runs did not
+ * exercise the code, so like still-running runs and an empty set they are not
+ * a signal (`unknown`), never green and never red; only a completed success
+ * asserts green. The signal carries the deciding run's workflow identity
+ * (`workflowPath`/`workflowName`) so `decide()` can route it to the one
+ * matching owner card instead of opening a duplicate.
  */
 export function baseSignal({ repo, branch, runs }) {
   requireValue(typeof repo === "string" && repo.length > 0, "repo is required");
@@ -139,7 +145,7 @@ export function baseSignal({ repo, branch, runs }) {
   const conclusion = latest.conclusion;
   const workflowPath = runWorkflowPath(latest);
   const workflowName = runWorkflowName(latest);
-  if (conclusion === "success" || conclusion === "skipped" || conclusion === "neutral") {
+  if (conclusion === "success") {
     return Object.freeze({ repo, branch, status: "green", runId: latest.id ?? null, workflowPath, workflowName });
   }
   // Startup failures and stale runs also failed to establish a healthy main.
