@@ -1,0 +1,32 @@
+# Path classification is an allowlist, not an enforcement installation.
+# Use the highest tier across all changed paths; sensitive wins overlaps.
+# Consider both old and new paths for renames. Unmatched paths are sensitive.
+# QA reviews every PR; sensitive changes also require independent Security.
+#
+# Content escalates regardless of path: endpoints or input parsing; auth,
+# sessions, cryptography, keys, secrets, credentials or permissions; tenant
+# or personal data; SQL, schema or migrations; dependencies and lockfiles
+# (including dev dependencies); CI and workflows; weakened or deleted tests
+# or assertions, or lowered gates. Prose and test names are not exemptions.
+#
+# The sensitive floor includes this map, workflows, actions, CODEOWNERS and
+# rulesets; manifests, locks, build and install tooling; auth, crypto, secrets,
+# input, trust boundaries and persistence; runtime, network, IAM, infrastructure,
+# release and deployment; and agent instructions, skills and tool permissions.
+# Moving a sensitive-floor path to a lower tier requires Security approval.
+# Unknown or uncertain changes remain sensitive. Low permits only allowlisted
+# inert prose, static non-sensitive fixtures and additive tests. Ordinary is
+# reserved for individually audited modules without untrusted input, sensitive
+# output, permissions, persistence or trust-boundary effects.
+version: 1
+default_tier: sensitive
+tiers:
+  low:
+    - LICENSE
+  ordinary: []
+  sensitive:
+    - .github/**
+    - src/**
+    - scripts/**
+    - package.json
+    - '*lock*'
